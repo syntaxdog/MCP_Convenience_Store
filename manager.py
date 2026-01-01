@@ -7,6 +7,7 @@ import google.generativeai as genai
 
 # 1. 환경 변수 및 Gemini 설정
 load_dotenv()
+DB_DIR = os.path.join(os.path.dirname(__file__), "db")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
@@ -20,16 +21,16 @@ def save_to_db(store_name, items):
     """
     수집된 상품 데이터를 store_name.json 파일로 저장합니다.
     """
-    filename = f"db_{store_name}.json"
+    file_path = os.path.join(DB_DIR, f"db_{store_name}.json")
     data = {
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "store_name": store_name,
         "items": items
     }
     
-    with open(filename, "w", encoding="utf-8") as f:
+    with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"✅ {filename} 저장 완료! (총 {len(items)}개 상품)")
+    print(f"✅ {file_path} 저장 완료! (총 {len(items)}개 상품)")
 
 # 3. LLM 분석 로직 (비정형 데이터 정제)
 async def analyze_text_with_llm(store_name, text_chunk):
@@ -75,10 +76,21 @@ async def analyze_text_with_llm(store_name, text_chunk):
 def load_all_data():
     """저장된 모든 JSON DB 파일을 읽어옵니다."""
     all_data = []
-    for file in os.listdir("."):
+    if not os.path.exists(DB_DIR):
+        print(f"⚠️ 경고: {DB_DIR} 폴더를 찾을 수 없습니다.")
+        return all_data
+
+    # 3. db 폴더 내 파일 탐색
+    for file in os.listdir(DB_DIR):
         if file.startswith("db_") and file.endswith(".json"):
-            with open(file, "r", encoding="utf-8") as f:
-                all_data.append(json.load(f))
+            # [중요] 파일 읽을 때 경로를 합쳐줘야 합니다.
+            file_path = os.path.join(DB_DIR, file)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    all_data.append(json.load(f))
+            except Exception as e:
+                print(f"❌ {file} 읽기 실패: {e}")
+                
     return all_data
 
 # 1. 내부 태깅 로직 (Gemini 호출부)
@@ -151,7 +163,7 @@ async def _get_tags_logic(product_names: list):
     
 async def enrich_db_with_tags_high_speed(store_name: str):
     """비동기 병렬 처리를 통해 수천 개의 상품을 초고속으로 태깅하고 _with_tags.json으로 저장합니다."""
-    file_path = f"db_{store_name.lower()}.json"
+    file_path = os.path.join(DB_DIR, f"db_{store_name.lower()}.json")
 
     if not os.path.exists(file_path):
         return f"[{store_name}] 원본 파일이 존재하지 않습니다."
@@ -273,7 +285,7 @@ async def enrich_db_with_tags_high_speed(store_name: str):
     db_data["items"] = items
     db_data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    enriched_file_path = f"db_{store_name.lower()}_with_tags.json"
+    enriched_file_path = os.path.join(DB_DIR, f"db_{store_name.lower()}_with_tags.json")
     with open(enriched_file_path, "w", encoding="utf-8") as f:
         json.dump(db_data, f, ensure_ascii=False, indent=2)
 

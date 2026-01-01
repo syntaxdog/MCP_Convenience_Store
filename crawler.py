@@ -3,6 +3,8 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 from manager import save_to_db, enrich_db_with_tags_high_speed, analyze_text_with_llm
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # 저장 위치 설정 (main.py와 공유할 DB 경로)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -281,8 +283,9 @@ async def get_gs25_deals():
                         if isinstance(price, str): price = int("".join(filter(str.isdigit, price)))
                         all_items.append({
                             "product_name": item.get("goodsNm", ""),
-                            "final_price": price,
-                            "unit_price": price // 2 if event_key == "ONE_TO_ONE" else (price * 2) // 3,
+                            "original_price": price,
+                            "sale_price" : price if event_key == "ONE_TO_ONE" else (price*2),
+                            "unit_effective_unit_price": price // 2 if event_key == "ONE_TO_ONE" else (price * 2) // 3,
                             "discount_condition": event_name,
                             "image_url": item.get("attFileNm") or item.get("attFileNmOld", "")
                         })
@@ -333,8 +336,9 @@ async def get_seven_eleven_deals():
                         
                         all_items.append({
                             "product_name": name_el.get_text(strip=True),
-                            "final_price": price,
-                            "unit_price": price // 2 if "1+1" in tag else (price * 2) // 3 if "2+1" in tag else price,
+                            "original_price": price,
+                            "sale_price" : price if "1+1" in tag else price*2 if "2+1" in tag else price,
+                            "unit_effective_unit_price": price // 2 if "1+1" in tag else (price * 2) // 3 if "2+1" in tag else price,
                             "discount_condition": tag,
                             "image_url": "https://www.7-eleven.co.kr" + li.select_one("img")["src"] if li.select_one("img") else ""
                         })
@@ -346,37 +350,86 @@ async def get_seven_eleven_deals():
             await browser.close()
             return f"세븐일레븐 에러: {e}"
 
-# --- 메인 실행부 ---
-async def main():
-    print("🚀 [1단계] 모든 편의점 및 마트 데이터 수집을 시작합니다...")
+# --- 스케쥴링 ---
+async def run_full_pipeline(stores):
+    """
+    특정 매장들에 대해 수집 및 Enrich 작업을 순차적으로 수행합니다.
+    """
+    print(f"\n--- 🔄 작업 시작: {', '.join(stores)} ---")
     
-    # 1. 병렬 크롤링 실행 (각 함수 내부에서 save_to_db를 호출하여 기본 JSON 생성)
-    results = await asyncio.gather(
-        get_gs_the_fresh_deals(),
-        # get_emart_deals(),
-        # get_cu_deals(),
-        # get_gs25_deals(),
-        # get_seven_eleven_deals()
-    )
+    # 1단계: 수집 (크롤링)
+    tasks = []
+    if "gs_the_fresh" in stores: tasks.append(get_gs_the_fresh_deals())
+    if "emart" in stores: tasks.append(get_emart_deals())
+    if "cu" in stores: tasks.append(get_cu_deals())
+    if "gs25" in stores: tasks.append(get_gs25_deals())
+    if "seven_eleven" in stores: tasks.append(get_seven_eleven_deals())
     
-    for res in results:
-        print(res)
-    
-    print("\n✨ [2단계] AI Enrich(태깅) 작업을 시작합니다...")
-    
-    # 2. 각 매장별로 고속 태깅 작업 수행
-    # manager.py에서 가져온 enrich_db_with_tags_high_speed 함수 활용
-    # stores = ["gs_the_fresh", "emart", "cu", "gs25", "seven_eleven"]
-    
+    if tasks:
+        print(f"🚀 [1단계] {len(tasks)}개 매장 데이터 수집 시작...")
+        results = await asyncio.gather(*tasks)
+        for res in results:
+            print(f"  > {res}")
+
+    # 2단계: AI Enrich (태깅)
+    print("\n✨ [2단계] AI Enrich(태깅) 작업 시작...")
     for store in stores:
         try:
-            # 고속 태깅 실행 및 결과 출력
             enrich_result = await enrich_db_with_tags_high_speed(store)
-            print(f"  > {enrich_result}")
+            print(f"  > ✅ {store}: {enrich_result}")
         except Exception as e:
-            print(f"  > ❌ {store} 태깅 중 오류 발생: {e}")
+            print(f"  > ❌ {store} 태깅 중 오류: {e}")
+            
+    print(f"--- ✅ 작업 완료: {', '.join(stores)} ---\n")
 
-    print("\n✅ 모든 수집 및 Enrich 작업이 완료되었습니다!")
+# --- 메인 실행부 (스케쥴러) ---
+async def main():
+    scheduler = AsyncIOScheduler()
+
+    # [스케줄 1] 편의점 (CU, GS25, 7-11) - 매월 1일 새벽 1시
+    # '0 1 1 * *'
+    scheduler.add_job(
+        run_full_pipeline,
+        CronTrigger(day="1", hour="1", minute="0"),
+        args=[["cu", "gs25", "seven_eleven"]],
+        name="Monthly_Convenience_Stores"
+    )
+
+    # [스케줄 2] GS 더프레시 - 매주 수요일 새벽 1시
+    # '0 1 * * 2' (0:월, 1:화, 2:수...)
+    scheduler.add_job(
+        run_full_pipeline,
+        CronTrigger(day_of_week="wed", hour="1", minute="0"),
+        args=[["gs_the_fresh"]],
+        name="Weekly_GS_The_Fresh"
+    )
+
+    # [스케줄 3] 이마트 - 매주 목요일 새벽 1시
+    scheduler.add_job(
+        run_full_pipeline,
+        CronTrigger(day_of_week="thu", hour="1", minute="0"),
+        args=[["emart"]],
+        name="Weekly_Emart"
+    )
+
+    scheduler.start()
+    print("⏰ 스케줄러가 시작되었습니다.")
+    print("  - 매월 1일 01:00: 편의점 3사")
+    print("  - 매주 수요일 01:00: GS 더프레시")
+    print("  - 매주 목요일 01:00: 이마트")
+
+    # 수동 실행 모드 처리
+    if len(sys.argv) > 1 and sys.argv[1] == "--manual":
+        target_store = sys.argv[2:] if len(sys.argv) > 2 else ["gs_the_fresh", "cu", "gs25", "seven_eleven", "emart"]
+        print(f"\n⚡ 수동 실행 모드 감지: {target_store} 작업을 즉시 실행합니다.")
+        await run_full_pipeline(target_store)
+
+    # 서버가 종료되지 않도록 무한 대기
+    try:
+        while True:
+            await asyncio.sleep(1000)
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
 
 if __name__ == "__main__":
     # 비동기 실행

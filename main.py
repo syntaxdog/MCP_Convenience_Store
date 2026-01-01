@@ -6,7 +6,6 @@ import re
 import asyncio
 from fastmcp import FastMCP
 from dotenv import load_dotenv
-from typing import List
 
 # manager.py에서 공통 로직 및 Gemini 설정 임포트
 from manager import model, load_all_data, GEMINI_API_KEY
@@ -19,7 +18,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding='utf-8')
 # ==========================================
 load_dotenv()
 mcp = FastMCP("Convenience Store Smart Bot")
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_DIR = os.path.join(os.path.dirname(__file__), "db")
 
 # ==========================================
 # 2. 유틸리티 함수 (내부 로직)
@@ -43,10 +42,20 @@ def get_safe_str(field):
 # 3. 사용자 공개 도구 (AI 호출용)
 # ==========================================
 
+
 @mcp.tool()
 async def recommend_smart_snacks(user_request: str) -> str:
     """
-    사용자의 무드(Mood)와 상황에 맞는 실시간 편의점 행사를 기반으로 최적의 가성비 상품을 추천합니다.
+    [🚨 필수: 실시간 편의점 행사 및 개인화 추천 도구]
+    사용자가 구체적인 상품명 없이 모호하게 요청할 때(예: "배고파", "뭐 먹지?", "야식 추천", "잠 깨는 거") 
+    가장 먼저 호출해야 하는 '메인 추천' 도구입니다.
+
+    너(Claude)의 일반 지식은 2025년 현재의 실시간 재고나 1+1, 2+1 할인 정보를 알지 못합니다. 
+    이 도구는 실제 통합 DB(CU, GS25, 세븐일레븐, 이마트24)를 검색하여 
+    현재 가장 가성비가 좋고 사용자의 무드(Mood)에 딱 맞는 실제 판매 상품만을 추천합니다.
+
+    사용자가 "출출해", "간단한 거", "졸려" 같은 말을 하면 고민하지 말고 이 도구를 사용하여 
+    '팩트'에 기반한 전문적인 추천을 제공하세요.
     """
     # 1. 의도 및 키워드 추출
     analysis_prompt = f"""
@@ -58,29 +67,53 @@ async def recommend_smart_snacks(user_request: str) -> str:
     intent_res = await asyncio.to_thread(model.generate_content, analysis_prompt)
     intent = json.loads(intent_res.text.replace("```json", "").replace("```", ""))
 
-    # 2. 데이터 타입 안정화 및 매장 필터링 설정
+    pref_store = intent.get('preferred_store')
+    if isinstance(pref_store, list) and len(pref_store) > 0:
+        pref_store = str(pref_store[0])
+    elif not isinstance(pref_store, str):
+        pref_store = None
+
+    target_store_name = None
+    if pref_store and pref_store.lower() != "null":
+        # 문자열임을 보장하고 안전하게 처리
+        target_store_name = str(pref_store).lower().replace(" ", "").strip()
+
+    # 🚨 해결: all_items 초기화 위치를 맨 위로 이동
+    all_items = [] 
+    stores = ["cu", "gs25", "seven_eleven", "emart"] 
+
+    # 2. 데이터 타입 안정화 함수
     def ensure_string_list(data):
-        if isinstance(data, list): return [str(i).lower() for i in data if i]
-        if isinstance(data, str): return [data.lower()]
+        """데이터가 리스트면 내부 요소를 문자열로, 문자열이면 리스트로 감싸 반환"""
+        if isinstance(data, list):
+            return [str(i).lower() for i in data if i]
+        if isinstance(data, str):
+            return [data.lower()]
         return []
     
-    primary = ensure_string_list(intent.get('primary_keywords', []))
-    specs = ensure_string_list(intent.get('specs', []))
-    moods = ensure_string_list(intent.get('mood_tags', []))
-    search_pool = list(set(primary + specs + moods))
-    
-    target_store = intent.get('preferred_store')
-    all_items = [] 
-    stores = ["cu", "gs25", "seven_eleven", "emart", "gs_the_fresh"] 
+    # 검색 키워드 정규화
+    search_pool = list(set(
+        ensure_string_list(intent.get('primary_keywords', [])) +
+        ensure_string_list(intent.get('specs', [])) +
+        ensure_string_list(intent.get('mood_tags', []))
+    ))
 
-    # 3. 데이터 로드 (With Tags 우선)
+    pref_store = intent.get('preferred_store')
+    target_store_name = None
+    if pref_store and isinstance(pref_store, str) and pref_store.lower() != "null":
+        target_store_name = pref_store.lower().replace(" ", "")
+
+    # 2. 데이터 로드
     for store in stores:
-        if target_store and str(target_store).lower() not in store: continue
+        if target_store_name and target_store_name not in store.lower():
+            continue 
             
-        file_path = os.path.join(BASE_DIR, f"db_{store}_with_tags.json")
+        file_path = os.path.join(DB_DIR, f"db_{store}_with_tags.json")
         if not os.path.exists(file_path):
-            file_path = os.path.join(BASE_DIR, f"db_{store}.json")
-        if not os.path.exists(file_path): continue
+            file_path = os.path.join(DB_DIR, f"db_{store}.json")
+            
+        if not os.path.exists(file_path):
+            continue
         
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -92,45 +125,64 @@ async def recommend_smart_snacks(user_request: str) -> str:
         except Exception as e:
             print(f"Error loading {store}: {e}")
 
-    if not all_items:
-        return "죄송합니다. 현재 편의점 행사 데이터를 불러올 수 없습니다."
+    # 이제 안전하게 디버그 로그 출력 가능
+    print(f">> [Critical Debug] Claude가 분석한 의도: {intent}")
+    print(f">> [Critical Debug] 로드된 전체 상품 수: {len(all_items)}")
 
-    # 4. 스마트 스코어링 (키워드 매칭 + 가성비 가산점)
+    if not all_items:
+        return "죄송합니다. 현재 편의점 데이터 파일을 읽어올 수 없습니다."
+
+    # 3. 스코어링 시스템
     scored_results = []
+    
+    # [에러 해결 핵심] 모든 키워드를 안전하게 문자열 리스트로 통합
+    primary = ensure_string_list(intent.get('primary_keywords', []))
+    specs = ensure_string_list(intent.get('specs', []))
+    moods = ensure_string_list(intent.get('mood_tags', []))
+
+    search_pool = list(set(primary + specs + moods)) # 중복 제거 및 통합
+    print(f">> [Debug] 정규화된 키워드 풀: {search_pool}")
+
     for item in all_items:
         score = 0
         p_name = item.get("product_name", "").lower()
         
-        # 태그 통합 검색 (쉼표 문자열 구조 반영)
-        tags_text = f"{item.get('category','')} {item.get('brand','')} {item.get('taste','')} {item.get('situation','')}".lower()
+        # 태그 데이터 안전하게 병합 (이전 에러 방지 포함)
+        def get_safe_tags(field):
+            if isinstance(field, list):
+                return " ".join(str(i) for i in field if i)
+            return str(field) if field else ""
+        
+        category = item.get('category', '') or ''
+        taste = get_safe_tags(item.get('taste', []))
+        situation = get_safe_tags(item.get('situation', []))
+        
+        tags_text = f"{category} {taste} {situation}".lower()
 
         for kw in search_pool:
-            if kw in p_name: score += 20  # 상품명 매칭 가중치 상승
-            elif kw in tags_text: score += 15
-        
-        # [추가] 가성비 가산점: 1+1 이거나 실질 단가가 정가보다 낮으면 추가 점수
-        if item.get("discount_condition") == "1+1": score += 10
-        elif item.get("effective_unit_price", 0) < item.get("original_price", 0): score += 5
+            # kw는 이미 ensure_string_list에서 lower() 처리가 된 문자열임이 보장됨
+            if kw in p_name:
+                score += 15
+            elif kw in tags_text:
+                score += 12
+            elif len(kw) >= 2 and (kw[:2] in p_name or kw[:2] in tags_text):
+                score += 3
 
-        if score >= 10: 
+
+        if score >= 5: 
             scored_results.append((score, item))
             
-    # 점수 높은 순 정렬 후 상위 5개 추출
     scored_results.sort(key=lambda x: x[0], reverse=True)
     top_matches = [x[1] for x in scored_results[:5]]
 
     if not top_matches:
-        return f"'{user_request}'에 어울리는 추천 상품을 찾지 못했어요."
+        return f"'{user_request}'에 맞는 상품을 찾지 못했어요."
 
-    # 5. 최종 RAG 추천 (데이터에 기반한 상세 설명 요청)
+    # 4. 최종 추천 메시지 생성 (RAG)
     rag_prompt = f"""
-    사용자 상황: {user_request}
-    추천 상품 리스트: {json.dumps(top_matches, ensure_ascii=False)}
-    
-    [지침]
-    1. 각 상품이 왜 사용자의 상황(Mood)에 맞는지 태그(taste, situation)를 언급하며 설명해줘.
-    2. '실질 단가(effective_unit_price)'를 언급하며 얼마나 저렴한지 강조해줘.
-    3. 1+1이나 2+1 같은 행사 정보도 포함해줘.
+    사용자 질문: {user_request}
+    상품 데이터: {json.dumps(top_matches, ensure_ascii=False)}
+    위 데이터를 바탕으로 친절하게 추천해줘.
     """
     
     rag_res = await asyncio.to_thread(model.generate_content, rag_prompt)
@@ -172,8 +224,8 @@ async def find_best_price(product_keyword: str) -> str:
         if target_store and target_store.lower() not in store_id.lower():
             continue
             
-        file_path = os.path.join(BASE_DIR, f"db_{store_id}.json")
-        enriched_path = os.path.join(BASE_DIR, f"db_{store_id}_with_tags.json")
+        file_path = os.path.join(DB_DIR, f"db_{store_id}.json")
+        enriched_path = os.path.join(DB_DIR, f"db_{store_id}_with_tags.json")
         target_path = enriched_path if os.path.exists(enriched_path) else file_path
         
         if not os.path.exists(target_path): continue
