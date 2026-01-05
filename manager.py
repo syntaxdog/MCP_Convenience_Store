@@ -231,16 +231,17 @@ async def enrich_db_with_tags_high_speed(store_name: str):
             else:
                 u_val = int(u_val) # 강제 형변환
 
-            raw_eff_price = item.get("effective_unit_price", 0)
+            raw_eff_price = item.get("unit_effective_unit_price") or item.get("effective_unit_price") or 0
             try:
                 if isinstance(raw_eff_price, str):
-                    # "4,500원" 같은 문자열에서 숫자만 추출
+                    # "4,500원" 같은 문자열 대응
                     import re
                     eff_price = int(re.sub(r'[^0-9]', '', raw_eff_price))
                 else:
-                    eff_price = int(raw_eff_price)
+                    # float(3250.0) 등을 int로 안전하게 변환
+                    eff_price = int(float(raw_eff_price))
             except:
-                eff_price = 0 # 변환 실패시 0원 처리
+                eff_price = 0
 
             # 3. [핵심] 파이썬이 직접 계산 (이제 둘 다 int이므로 에러 없음)
             price_per_unit = 0
@@ -257,9 +258,8 @@ async def enrich_db_with_tags_high_speed(store_name: str):
                     price_per_unit = int((eff_price / u_val) * 100)
                     price_ref = f"100{u_type}당"
                 else:
-                    # 개수 단위
                     price_per_unit = int(eff_price / u_val)
-                    price_ref = "개당"
+                    price_ref = f"{u_type}당" if u_type else "개당"
             else:
                 price_per_unit = eff_price
 

@@ -384,13 +384,14 @@ async def run_full_pipeline(stores):
 
 # --- 메인 실행부 (스케쥴러) ---
 async def main():
+    await enrich_db_with_tags_high_speed('gs25')
     scheduler = AsyncIOScheduler()
 
     # [스케줄 1] 편의점 (CU, GS25, 7-11) - 매월 1일 새벽 1시
     # '0 1 1 * *'
     scheduler.add_job(
         run_full_pipeline,
-        CronTrigger(day="1", hour="1", minute="0"),
+        CronTrigger(day="3", hour="14", minute="12"),
         args=[["cu", "gs25", "seven_eleven"]],
         name="Monthly_Convenience_Stores"
     )
