@@ -8,6 +8,7 @@ import google.generativeai as genai
 # 1. 환경 변수 및 Gemini 설정
 load_dotenv()
 DB_DIR = os.path.join(os.path.dirname(__file__), "db")
+TAG_CANDIDATES_PATH = os.path.join(DB_DIR, "tag_candidates.json")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
@@ -15,6 +16,60 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-3-flash-preview")
+
+async def generate_tag_candidates():
+    """태그 후보 생성 - 크롤링 전 1회만 실행"""
+    prompt = """
+    편의점/마트 상품 태깅용 태그 후보를 만들어줘.
+    
+    [조건]
+    - category: 상품 분류 50개 (명확하게 구분, 겹치지 않게)
+    - taste: 맛/식감 표현 50개 (명확하게 구분, 겹치지 않게)
+    - situation: 상황/용도 50개 (명확하게 구분, 겹치지 않게)
+    - 모두 짧고 명확한 단어로 (3글자 이상, 10글자 이하)
+    
+    [category 예시]
+    음료, 과자, 라면, 유제품, 아이스크림, 도시락, 빵, 샌드위치, 김밥, 생활용품, 위생용품, 주류 등
+    
+    [taste 예시]
+    달콤한, 짭짤한, 매운, 시원한, 고소한, 새콤한, 담백한, 바삭한 등
+    
+    [situation 예시]
+    운동후, 야식, 간식, 아침식사, 다이어트, 술안주, 피로회복 등
+    
+    JSON 형식으로만 응답:
+    {
+      "category": ["음료", "과자", ...],
+      "taste": ["달콤한", "짭짤한", ...],
+      "situation": ["운동후", "야식", ...]
+    }
+    """
+    
+    res = await asyncio.to_thread(model.generate_content, prompt)
+    text = res.text
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+    
+    candidates = json.loads(text)
+    
+    with open(TAG_CANDIDATES_PATH, "w", encoding="utf-8") as f:
+        json.dump(candidates, f, ensure_ascii=False, indent=2)
+    
+    print(f"✅ 태그 후보 저장 완료!")
+    print(f"   - category: {len(candidates['category'])}개")
+    print(f"   - taste: {len(candidates['taste'])}개")
+    print(f"   - situation: {len(candidates['situation'])}개")
+    
+    return candidates
+
+def load_tag_candidates() -> dict:
+    """저장된 태그 후보 로드"""
+    if os.path.exists(TAG_CANDIDATES_PATH):
+        with open(TAG_CANDIDATES_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"category": [], "taste": [], "situation": []}
 
 # 2. 데이터 저장 로직 (DB 역할)
 def save_to_db(store_name, items):
@@ -95,62 +150,63 @@ def load_all_data():
 
 # 1. 내부 태깅 로직 (Gemini 호출부)
 async def _get_tags_logic(product_names: list):
-    """
-    브랜드, 카테고리, 맛, 상황, 타겟을 모두 포함하는 
-    정밀 태깅용 프롬프트입니다.
-    """
+    """태그 후보 목록에서만 선택하는 정밀 태깅"""
+    candidates = load_tag_candidates()
+    
     prompt = f"""
     당신은 대한민국 편의점 및 마트 상품 전문가입니다. 
-    제공된 상품 리스트를 분석하여 마케팅 및 검색에 최적화된 JSON 배열을 생성하세요.
+    제공된 상품 리스트를 분석하여 JSON 배열을 생성하세요.
 
-    [절대 규칙 - 매칭 필수]
-    1. **product_name**: 입력된 상품명을 **절대 한 글자도, 오타까지도 수정하지 말고 그대로** 다시 적으세요. 
-       - 예: 입력이 "덴마트 우유"면 출력도 반드시 "덴마트 우유"여야 합니다. "덴마크"로 고치지 마세요.
+    [절대 규칙]
+    1. product_name: 입력된 상품명을 절대 수정하지 말고 그대로 적으세요.
+    2. category, taste, situation은 반드시 아래 허용 목록에서만 선택하세요.
 
-    [필수 포함 필드 및 규칙 - 자료형 엄수]
-    1. **effective_unit_price**: 혜택 적용 후 상품 개당 실질 단가 (하나 실구매가) (옳은지 검증 후, 옳지 않다면 변경)
-    2. **unit_value**: 총 용량 합계를 계산해서 적으세요. (예: "200g*2팩" -> 400, "20g*10입" -> 200, "110g*2" -> 220, "2L" -> 2000)
-    3. **unit_type**: 단위 (ml, g, kg, L, 개, 매, 입 등)
-    4. **brand**: 브랜드명 (모르면 "일반")
-    5. **category**: 세부 분류 (예: 음료, 라면, 스낵)
-    6. **taste**: 쉼표로 구분된 문자열. (예: "달콤한, 상큼한")
-    7. **situation**: 쉼표로 구분된 문자열. (예: "운동후, 갈증해소")
-    8. **target**: 주요 타겟 (예: "학생, 운동인")
+    [category 허용 목록] - 1개만 선택
+    {candidates['category']}
+    
+    [taste 허용 목록] - 복수 선택 가능, 쉼표로 구분
+    {candidates['taste']}
+    
+    [situation 허용 목록] - 복수 선택 가능, 쉼표로 구분
+    {candidates['situation']}
+
+    [필수 필드]
+    - product_name: 상품명 (원본 그대로)
+    - effective_unit_price: 혜택 적용 후 개당 실질 단가
+    - unit_value: 총 용량 (예: "200g*2팩" -> 400)
+    - unit_type: 단위 (ml, g, 개, 매 등)
+    - brand: 브랜드명 (모르면 "일반")
+    - category: 위 목록에서 1개 선택
+    - taste: 위 목록에서 선택, 쉼표 구분 문자열
+    - situation: 위 목록에서 선택, 쉼표 구분 문자열
+    - target: 주요 타겟 (예: "학생, 직장인")
 
     [주의사항]
-    - JSON 응답 시 taste와 situation 필드에 대괄호 [ ]를 사용하는 것은 엄격히 금지됩니다. 
-    - 예: "taste": ["단맛"] (X) -> "taste": "단맛" (O)
+    - 목록에 없는 태그 절대 사용 금지
+    - taste, situation은 문자열로 (배열 아님)
 
-    [응답 형식]
-    - 반드시 JSON 배열 형식(`[...]`)으로만 답변하세요.
-    - `product_name` 키를 포함하여 원본 데이터와 매칭될 수 있게 하세요.
-
-    [분석 대상 리스트]
+    [분석 대상]
     {', '.join(product_names)}
 
-    [JSON 응답 예시]
+    [응답 예시]
     [
       {{
         "product_name": "포카리스웨트 500ml",
-        "unit_value : 500,
-        "unit_type : "ml",
-        "effective_unit_price": "4000원",
-        "price_per_unit" : "800원 (100ml당)",
-        "brand": "CJ",
-        "category": "간편식",
-        "taste": "짭짤한, 고소한",
-        "situation": "아침식사, 간단한끼",
-        "target": "학생, 직장인"
+        "unit_value": 500,
+        "unit_type": "ml",
+        "effective_unit_price": 2000,
+        "brand": "동아오츠카",
+        "category": "음료",
+        "taste": "시원한, 상큼한",
+        "situation": "운동후, 갈증해소",
+        "target": "운동인"
       }}
     ]
     """
-    
     try:
-        # 파일 내부에 정의된 model 객체를 직접 사용
         response = await asyncio.to_thread(model.generate_content, prompt)
         res_text = response.text
         
-        # 마크다운 코드 블록 제거 로직
         if "```json" in res_text:
             res_text = res_text.split("```json")[1].split("```")[0].strip()
         elif "```" in res_text:
@@ -290,3 +346,6 @@ async def enrich_db_with_tags_high_speed(store_name: str):
         json.dump(db_data, f, ensure_ascii=False, indent=2)
 
     return f"✅ {store_name} 고속 업데이트 완료! {updated_count}개 상품 태그 추가."
+
+if __name__ == "__main__":
+    asyncio.run(generate_tag_candidates())

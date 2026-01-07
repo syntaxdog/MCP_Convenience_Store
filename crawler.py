@@ -384,7 +384,7 @@ async def run_full_pipeline(stores):
 
 # --- 메인 실행부 (스케쥴러) ---
 async def main():
-    await enrich_db_with_tags_high_speed('gs25')
+    await enrich_db_with_tags_high_speed('seven_eleven')
     scheduler = AsyncIOScheduler()
 
     # [스케줄 1] 편의점 (CU, GS25, 7-11) - 매월 1일 새벽 1시
