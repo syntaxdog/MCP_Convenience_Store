@@ -1,11 +1,21 @@
-import os, re
+"""
+편의점 행사 데이터 관리 모듈
+- 태그 후보 생성/로드
+- LLM 기반 상품 태깅
+- DB 저장/로드
+"""
+import os
+
+import re
 import json
 import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-# 1. 환경 변수 및 Gemini 설정
+# ==========================================
+# 환경 설정
+# ==========================================
 load_dotenv()
 DB_DIR = os.path.join(os.path.dirname(__file__), "db")
 TAG_CANDIDATES_PATH = os.path.join(DB_DIR, "tag_candidates.json")
@@ -17,16 +27,21 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-3-flash-preview")
 
+
+# ==========================================
+# 태그 후보 관리
+# ==========================================
+
 async def generate_tag_candidates():
     """태그 후보 생성 - 크롤링 전 1회만 실행"""
     prompt = """
-    편의점/마트 상품 태깅용 태그 후보를 만들어줘.
+    편의점 상품 태깅용 태그 후보를 만들어줘.
     
     [조건]
-    - category: 상품 분류 50개 (명확하게 구분, 겹치지 않게)
-    - taste: 맛/식감 표현 50개 (명확하게 구분, 겹치지 않게)
-    - situation: 상황/용도 50개 (명확하게 구분, 겹치지 않게)
-    - 모두 짧고 명확한 단어로 (3글자 이상, 10글자 이하)
+    - category: 상품 분류 70개 (명확하게 구분, 겹치지 않게)
+    - taste: 맛/식감 표현 70개 (명확하게 구분, 겹치지 않게)
+    - situation: 상황/용도 70개 (명확하게 구분, 겹치지 않게)
+    - 모두 짧고 명확한 단어로 (2글자 이상, 10글자 이하)
     
     [category 예시]
     음료, 과자, 라면, 유제품, 아이스크림, 도시락, 빵, 샌드위치, 김밥, 생활용품, 위생용품, 주류 등
@@ -47,6 +62,7 @@ async def generate_tag_candidates():
     
     res = await asyncio.to_thread(model.generate_content, prompt)
     text = res.text
+
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
@@ -71,11 +87,13 @@ def load_tag_candidates() -> dict:
             return json.load(f)
     return {"category": [], "taste": [], "situation": []}
 
-# 2. 데이터 저장 로직 (DB 역할)
+# ==========================================
+# 데이터 저장/로드
+# ==========================================
 def save_to_db(store_name, items):
-    """
-    수집된 상품 데이터를 store_name.json 파일로 저장합니다.
-    """
+    """상품 데이터를 JSON 파일로 저장"""
+    os.makedirs(DB_DIR, exist_ok=True)
+    
     file_path = os.path.join(DB_DIR, f"db_{store_name}.json")
     data = {
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -87,11 +105,29 @@ def save_to_db(store_name, items):
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"✅ {file_path} 저장 완료! (총 {len(items)}개 상품)")
 
-# 3. LLM 분석 로직 (비정형 데이터 정제)
-async def analyze_text_with_llm(store_name, text_chunk):
-    """
-    전단지의 텍스트 조각을 받아 Gemini를 통해 JSON 구조로 변환합니다.
-    """
+def load_all_data():
+    """저장된 모든 JSON DB 파일을 읽어옴"""
+    all_data = []
+    if not os.path.exists(DB_DIR):
+        print(f"⚠️ 경고: {DB_DIR} 폴더를 찾을 수 없습니다.")
+        return all_data
+
+    for file in os.listdir(DB_DIR):
+        if file.startswith("db_") and file.endswith(".json"):
+            file_path = os.path.join(DB_DIR, file)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    all_data.append(json.load(f))
+            except Exception as e:
+                print(f"❌ {file} 읽기 실패: {e}")
+                
+    return all_data
+
+# ==========================================
+# LLM 기반 태깅
+# ==========================================
+async def analyze_text_with_llm(store_name: str, text_chunk: str) -> str:
+    """전단지 텍스트를 Gemini로 JSON 구조로 변환 (마트용)"""
     prompt = f"""
     당신은 편의점/마트 행사 정보 분석 전문가입니다.
     제공된 [{store_name}]의 텍스트에서 상품명, 원래가격, 최종가격(할인가), 행사조건(1+1, 2+1 등)을 추출하세요.
@@ -114,11 +150,9 @@ async def analyze_text_with_llm(store_name, text_chunk):
     """
     
     try:
-        # 비동기 환경에서 Gemini 호출 (단순화를 위해 to_thread 사용 가능)
         response = await asyncio.to_thread(model.generate_content, prompt)
-        
-        # JSON 문자열만 추출 (마크다운 제거)
         res_text = response.text
+        
         if "```json" in res_text:
             res_text = res_text.split("```json")[1].split("```")[0].strip()
         
@@ -127,28 +161,6 @@ async def analyze_text_with_llm(store_name, text_chunk):
         print(f"❌ Gemini 분석 에러: {e}")
         return json.dumps({"items": []})
 
-# 4. 데이터 로드 로직 (검색용)
-def load_all_data():
-    """저장된 모든 JSON DB 파일을 읽어옵니다."""
-    all_data = []
-    if not os.path.exists(DB_DIR):
-        print(f"⚠️ 경고: {DB_DIR} 폴더를 찾을 수 없습니다.")
-        return all_data
-
-    # 3. db 폴더 내 파일 탐색
-    for file in os.listdir(DB_DIR):
-        if file.startswith("db_") and file.endswith(".json"):
-            # [중요] 파일 읽을 때 경로를 합쳐줘야 합니다.
-            file_path = os.path.join(DB_DIR, file)
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    all_data.append(json.load(f))
-            except Exception as e:
-                print(f"❌ {file} 읽기 실패: {e}")
-                
-    return all_data
-
-# 1. 내부 태깅 로직 (Gemini 호출부)
 async def _get_tags_logic(product_names: list):
     """태그 후보 목록에서만 선택하는 정밀 태깅"""
     candidates = load_tag_candidates()
@@ -217,7 +229,7 @@ async def _get_tags_logic(product_names: list):
         print(f"❌ Gemini 분석 실패: {e}")
         return "[]"
     
-async def enrich_db_with_tags_high_speed(store_name: str):
+async def enrich_db_with_tags_high_speed(store_name: str) -> str:
     """비동기 병렬 처리를 통해 수천 개의 상품을 초고속으로 태깅하고 _with_tags.json으로 저장합니다."""
     file_path = os.path.join(DB_DIR, f"db_{store_name.lower()}.json")
 
@@ -229,7 +241,7 @@ async def enrich_db_with_tags_high_speed(store_name: str):
     
     items = db_data.get("items", [])
     
-    # 1. 태깅 대상 추출 (중복 제거 및 미분류 상품 대상)
+    # 태깅 대상 추출 (중복 제거 및 미분류 상품 대상)
     to_tag_names = list(set([
         item["product_name"] for item in items 
         if "category" not in item or not item["category"] or item["category"] == "미분류"
@@ -252,21 +264,22 @@ async def enrich_db_with_tags_high_speed(store_name: str):
             except:
                 return []
 
-    # 2. 병렬 실행 및 결과 취합
+    # 병렬 실행 및 결과 취합
     tasks = [process_chunk(c) for c in chunks]
     all_results = await asyncio.gather(*tasks)
 
-    # 3. 매칭 라이브러리 생성 (공백 제거 매칭용)
+    # 매칭 라이브러리 생성
     tagged_library = {}
     for chunk_res in all_results:
-        if not isinstance(chunk_res, list): continue
+        if not isinstance(chunk_res, list):
+            continue
         for res_item in chunk_res:
             p_name = res_item.get("product_name") or res_item.get("name")
             if p_name:
                 match_key = str(p_name).replace(" ", "").strip().lower()
                 tagged_library[match_key] = res_item
 
-    # 4. 데이터 병합 및 정규화
+    # 데이터 병합 및 정규화
     updated_count = 0
     for item in items:
         name = item.get("product_name", "")
@@ -275,42 +288,36 @@ async def enrich_db_with_tags_high_speed(store_name: str):
         if current_key in tagged_library:
             info = tagged_library[current_key]
             
-            # 1. LLM이 추출한 용량 정보 가져오기
+            # LLM이 추출한 용량 정보
             u_val = info.get("unit_value", 1)
             u_type = info.get("unit_type", "개")
             
-            # (안전장치) LLM이 문자를 섞어 보냈을 경우 숫자만 추출
+            # 문자 섞여 있으면 숫자만 추출
             if isinstance(u_val, str):
-                import re
                 nums = re.findall(r'\d+', u_val)
                 u_val = int(nums[0]) if nums else 1
             else:
-                u_val = int(u_val) # 강제 형변환
+                u_val = int(u_val)
 
             raw_eff_price = item.get("unit_effective_unit_price") or item.get("effective_unit_price") or 0
             try:
                 if isinstance(raw_eff_price, str):
-                    # "4,500원" 같은 문자열 대응
-                    import re
                     eff_price = int(re.sub(r'[^0-9]', '', raw_eff_price))
                 else:
-                    # float(3250.0) 등을 int로 안전하게 변환
                     eff_price = int(float(raw_eff_price))
             except:
                 eff_price = 0
 
-            # 3. [핵심] 파이썬이 직접 계산 (이제 둘 다 int이므로 에러 없음)
+            # 단위당 가격 계산
             price_per_unit = 0
             price_ref = "개당"
 
             if u_val > 0:
                 if str(u_type).lower() in ["ml", "g", "mg", "l", "kg"]:
-                    # 단위 정규화 (L, kg -> ml, g)
                     if str(u_type).lower() in ["l", "kg", "리터"]:
                         u_val = u_val * 1000
                         u_type = "ml" if "l" in str(u_type).lower() else "g"
 
-                    # 액체/고체: 100단위당 가격
                     price_per_unit = int((eff_price / u_val) * 100)
                     price_ref = f"100{u_type}당"
                 else:
@@ -319,16 +326,16 @@ async def enrich_db_with_tags_high_speed(store_name: str):
             else:
                 price_per_unit = eff_price
 
-            # 4. 최종 데이터 업데이트
             def ensure_string(val):
-                if isinstance(val, list): return ", ".join(str(v) for v in val).strip()
+                if isinstance(val, list):
+                    return ", ".join(str(v) for v in val).strip()
                 return str(val) if val else "일반"
 
             item.update({
-                "unit_value": u_val,            # 나중에 검증용으로 남겨둠
-                "unit_type": u_type,            # 나중에 검증용으로 남겨둠
-                "price_per_unit": price_per_unit, # 정렬용 핵심 데이터
-                "price_reference": price_ref,     # UI 표시용 데이터
+                "unit_value": u_val,
+                "unit_type": u_type,
+                "price_per_unit": price_per_unit,
+                "price_reference": price_ref,
                 "brand": ensure_string(info.get("brand")),
                 "category": ensure_string(info.get("category")),
                 "taste": ensure_string(info.get("taste")),
@@ -337,7 +344,7 @@ async def enrich_db_with_tags_high_speed(store_name: str):
             })
             updated_count += 1
     
-    # 최종 결과 저장
+    # 저장
     db_data["items"] = items
     db_data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -345,7 +352,10 @@ async def enrich_db_with_tags_high_speed(store_name: str):
     with open(enriched_file_path, "w", encoding="utf-8") as f:
         json.dump(db_data, f, ensure_ascii=False, indent=2)
 
-    return f"✅ {store_name} 고속 업데이트 완료! {updated_count}개 상품 태그 추가."
+    return f"✅ {store_name} 업데이트 완료! {updated_count}개 상품 태그 추가."
 
+# ==========================================
+# 실행
+# ==========================================
 if __name__ == "__main__":
     asyncio.run(generate_tag_candidates())

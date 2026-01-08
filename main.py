@@ -1,63 +1,58 @@
+"""
+편의점 행사 정보 MCP 서버
+- CU, GS25, 세븐일레븐 행사 상품 추천
+"""
 import os
 import json
 import sys
 import io
 import re
-import asyncio
 from fastmcp import FastMCP
 from dotenv import load_dotenv
-
-# manager.py에서 공통 로직 및 Gemini 설정 임포트
-from manager import model, load_all_data, GEMINI_API_KEY
-from manager import load_all_data, load_tag_candidates
+from manager import load_tag_candidates
 
 # UTF-8 출력 설정
 sys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding='utf-8')
 
 # ==========================================
-# 1. 초기화 및 설정
+# 초기화 및 설정
 # ==========================================
 load_dotenv()
 mcp = FastMCP("Convenience Store Smart Bot")
 DB_DIR = os.path.join(os.path.dirname(__file__), "db")
-store_display_names = {
-            "emart": "대형마트 이마트",
-            "gs_the_fresh": "기업형 슈퍼마켓(SSM) GS더프레시",
-            "cu": "편의점 CU",
-            "gs25": "편의점 GS25",
-            "seven_eleven" : "편의점 세븐일레븐"
-        }
+
+STORE_NAMES = {
+    "cu": "편의점 CU",
+    "gs25": "편의점 GS25",
+    "seven_eleven": "편의점 세븐일레븐"
+}
+
+# 태그 후보 미리 로드 (성능 향상)
+TAG_CANDIDATES = load_tag_candidates()
+
+def decode_unicode(text: str) -> str:
+    """유니코드 이스케이프 디코딩"""
+    if not text:
+        return text
+    try:
+        # \\uXXXX 패턴이 있으면 디코딩
+        if '\\u' in text:
+            return text.encode().decode('unicode_escape')
+    except:
+        pass
+    return text
 
 # ==========================================
-# 2. 유틸리티 함수 (내부 로직)
+# MCP 도구
 # ==========================================
-
-def ensure_string_list(data):
-    """검색어 리스트 정규화"""
-    if isinstance(data, list):
-        return [str(i).lower().strip() for i in data if i]
-    if isinstance(data, str):
-        return [data.lower().strip()]
-    return []
-
-def get_safe_str(field):
-    """필드 데이터를 안전하게 문자열로 변환"""
-    if isinstance(field, list):
-        return " ".join(str(i) for i in field if i)
-    return str(field) if field else ""
 
 @mcp.tool()
-def get_available_tags() -> str:
+def get_available_tags() -> dict:
     """
     검색에 사용 가능한 태그 목록을 반환합니다.
     recommend_smart_snacks 호출 전에 이 목록에서 선택하세요.
     """
-    candidates = load_tag_candidates()
-    return json.dumps(candidates, ensure_ascii=False, indent=2)
-
-# ==========================================
-# 3. 사용자 공개 도구 (AI 호출용)
-# ==========================================
+    return TAG_CANDIDATES
 
 @mcp.tool()
 async def recommend_smart_snacks(
@@ -74,16 +69,20 @@ async def recommend_smart_snacks(
 
     Args:
         keywords: 검색 키워드 + 브랜드/동의어 포함 (예: ["라면", "신라면", "컵라면"])
-        categories: 🔥 여러 카테고리 동시 검색 가능 (예: ["음료", "과자", "빵"]) (⭐ 필수 권장 - 정확한 결과를 위해 반드시 선택)
+        categories: 여러 카테고리 동시 검색 가능 (예: ["음료", "과자", "빵"]) - 필수 권장
         situation_tags: 상황 태그 - get_available_tags()의 situation에서 선택
         taste_tags: 맛 태그 - get_available_tags()의 taste에서 선택
-        preferred_store: 선호 매장 - "cu", "gs25", "emart", "seven_eleven" 중 하나
+        preferred_store: 선호 매장 - "cu", "gs25", "seven_eleven" 중 하나
 
     Returns:
         매칭된 상품 리스트 JSON
     """
     all_items = []
-    stores = ["cu", "gs25", "seven_eleven", "emart"]
+    stores = list(STORE_NAMES.keys())
+    keywords = [decode_unicode(k) for k in keywords] if keywords else []
+    categories = [decode_unicode(c) for c in categories] if categories else None
+    situation_tags = [decode_unicode(s) for s in situation_tags] if situation_tags else None
+    taste_tags = [decode_unicode(t) for t in taste_tags] if taste_tags else None
 
     # 1. 매장 필터링
     if preferred_store:
@@ -110,7 +109,7 @@ async def recommend_smart_snacks(
     if not all_items:
         return json.dumps({"error": "데이터 로드 실패", "results": []}, ensure_ascii=False)
 
-    # 3. 카테고리 필터링 (먼저 적용 - 성능 향상)
+    # 3. 카테고리 필터링 (성능 향상)
     if categories:
         categories_lower = [c.lower() for c in categories]
         all_items = [
@@ -200,7 +199,7 @@ async def recommend_smart_snacks(
     return json.dumps({
         "query": {
             "keywords": keywords,
-            "categories": categories,  # category → categories
+            "categories": categories,
             "situation_tags": situation_tags,
             "taste_tags": taste_tags,
             "store": preferred_store
@@ -231,9 +230,8 @@ async def find_best_price(
     main_keyword = keywords[0]
     search_terms = [term.replace(" ", "").lower() for term in keywords]
 
-    # 1. DB 로드 및 필터링
     all_matched_items = []
-    available_stores = ["cu", "gs25", "seven_eleven"]
+    available_stores = list(STORE_NAMES.keys())
     
     # 매장 필터링
     if preferred_store:
@@ -258,14 +256,12 @@ async def find_best_price(
                     p_name_clean = item.get("product_name", "").lower().replace(" ", "")
                     
                     match_score = 0
-                    
-                    # 스코어링
                     for i, term in enumerate(search_terms):
                         if term in p_name_clean:
                             match_score += 100 if i == 0 else 20
                     
                     if match_score >= 50:
-                        display_name = store_display_names.get(store_id, store_id.upper())
+                        display_name = STORE_NAMES.get(store_id, store_id.upper())
                         item["match_score"] = match_score
                         item["store_name"] = display_name
                         item["sort_price"] = (
@@ -323,7 +319,7 @@ async def compare_category_top3(
     """
     [매장별 가성비 TOP3 비교]
     사용자가 "OO 비교해줘", "편의점별 OO 뭐가 좋아?" 처럼
-    **카테고리 전체**를 매장별로 비교할 때 사용합니다.
+    **카테고리 전체**를 매장별로 **비교**할 때 사용합니다.
     
     예시 쿼리: "라면 비교해줘", "편의점별 음료 가성비", "과자 어디가 좋아?"
     
@@ -335,18 +331,17 @@ async def compare_category_top3(
         category: 상품 카테고리 - get_available_tags()에서 선택
         preferred_store: 특정 매장만 비교
     """
-    available_stores = ["cu", "gs25", "seven_eleven"]
+    available_stores = list(STORE_NAMES.keys())
+    category = decode_unicode(category)
+    keywords = [decode_unicode(k) for k in keywords]
     
-    # 매장 필터링
     if preferred_store:
         target = preferred_store.lower().replace(" ", "")
         available_stores = [s for s in available_stores if target in s]
     
-    # 검색어 준비
     search_keywords = [k.replace(" ", "").lower() for k in keywords]
     main_keyword = search_keywords[0]
     
-    # 매장별 결과 저장
     report_data = {store: [] for store in available_stores}
     
     for store_id in available_stores:
@@ -361,7 +356,6 @@ async def compare_category_top3(
                 data = json.load(f)
                 
             for item in data.get("items", []):
-                # 카테고리 필터링 (있으면)
                 if category:
                     item_category = (item.get("category") or "").lower()
                     if category.lower() != item_category:
@@ -406,7 +400,7 @@ async def compare_category_top3(
         if items:
             sorted_items = sorted(items, key=lambda x: (-x["_score"], x["_sort_price"]))[:3]
             
-            display_name = store_display_names.get(store_id, store_id.upper())
+            display_name = STORE_NAMES.get(store_id, store_id.upper())
             final_results[display_name] = [{
                 "product_name": item.get("product_name"),
                 "discount_condition": item.get("discount_condition"),

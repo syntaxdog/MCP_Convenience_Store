@@ -1,83 +1,20 @@
-import os, json, re, asyncio, sys
+"""
+편의점 행사 데이터 크롤러
+- CU, GS25, 세븐일레븐 지원
+- 자동 스케줄링 (매월 1일)
+"""
+import os
+import json
+import re
+import asyncio
+import sys
 import requests
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
-from manager import save_to_db, enrich_db_with_tags_high_speed, analyze_text_with_llm
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-# 저장 위치 설정 (main.py와 공유할 DB 경로)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-def normalize_product_data(item: dict) -> dict:
-    """
-    상품명, 행사내용, 단위 필드를 순차적으로 탐색하여 
-    용량(capacity_ml)과 100단위당 가격(unit_price_per_100)을 계산합니다.
-    """
-    p_name = item.get("product_name", "")
-    price = item.get("final_price", 0)
-    condition = item.get("discount_condition", "")
-    unit_field = item.get("unit", "")
-    
-    # 1. 탐색할 텍스트 후보군 (순서 중요: 상품명 -> 행사내용 -> 단위)
-    # None이 들어올 경우를 대비해 빈 문자열 처리
-    search_targets = [
-        str(p_name), 
-        str(condition), 
-        str(unit_field)
-    ]
-    
-    capacity = 0
-    
-    # 정규식: 소수점 지원 (1.1kg), 대소문자 무시
-    # 예: 1.5L, 200ml, 500g, 1kg
-    pattern = r'(\d+(?:\.\d+)?)\s*(ml|l|g|kg)'
-    
-    for text in search_targets:
-        match = re.search(pattern, text.lower())
-        if match:
-            value = float(match.group(1))
-            unit = match.group(2)
-            
-            # 단위 변환 (L, kg -> 1000배)
-            if unit in ['l', 'kg']:
-                capacity = int(value * 1000)
-            else:
-                capacity = int(value)
-            
-            # 묶음 상품 체크 (x3, *3입 등) - 해당 텍스트 내에서 찾기
-            bundle_match = re.search(r'[\*x]\s*(\d+)', text.lower())
-            if bundle_match:
-                count = int(bundle_match.group(1))
-                capacity *= count
-            
-            # 용량을 찾았으면 루프 중단 (더 이상 뒤질 필요 없음)
-            break
-
-    # 2. 실질 가격 및 용량 계산 (행사 반영)
-    total_capacity = capacity
-    pay_price = price
-    
-    # 행사 내용(condition)은 어디서 용량을 찾았든 항상 참조해야 함
-    cond_lower = str(condition).lower()
-    
-    if "1+1" in cond_lower:
-        total_capacity = capacity * 2
-    elif "2+1" in cond_lower:
-        total_capacity = capacity * 3
-        pay_price = price * 2
-
-    # 3. 데이터 주입
-    if total_capacity > 0:
-        # 0으로 나누기 방지
-        item["unit_price_per_100"] = int((pay_price / total_capacity) * 100)
-        item["capacity_ml"] = capacity
-    else:
-        # 용량 파악 불가 시
-        item["unit_price_per_100"] = 0
-        item["capacity_ml"] = 0
-        
-    return item
+from manager import save_to_db, enrich_db_with_tags_high_speed, analyze_text_with_llm
 
 # --- [도구 1] GS 더프레시 크롤러 ---
 async def get_gs_the_fresh_deals():
@@ -384,46 +321,46 @@ async def run_full_pipeline(stores):
 
 # --- 메인 실행부 (스케쥴러) ---
 async def main():
-    await enrich_db_with_tags_high_speed('seven_eleven')
+    #await enrich_db_with_tags_high_speed('seven_eleven')
     scheduler = AsyncIOScheduler()
 
     # [스케줄 1] 편의점 (CU, GS25, 7-11) - 매월 1일 새벽 1시
-    # '0 1 1 * *'
+    # 1 1 0 이 기본
     scheduler.add_job(
         run_full_pipeline,
-        CronTrigger(day="3", hour="14", minute="12"),
+        CronTrigger(day="8", hour="17", minute="53"),
         args=[["cu", "gs25", "seven_eleven"]],
         name="Monthly_Convenience_Stores"
     )
 
-    # [스케줄 2] GS 더프레시 - 매주 수요일 새벽 1시
-    # '0 1 * * 2' (0:월, 1:화, 2:수...)
-    scheduler.add_job(
-        run_full_pipeline,
-        CronTrigger(day_of_week="wed", hour="1", minute="0"),
-        args=[["gs_the_fresh"]],
-        name="Weekly_GS_The_Fresh"
-    )
+    # # [스케줄 2] GS 더프레시 - 매주 수요일 새벽 1시
+    # # '0 1 * * 2' (0:월, 1:화, 2:수...)
+    # scheduler.add_job(
+    #     run_full_pipeline,
+    #     CronTrigger(day_of_week="wed", hour="1", minute="0"),
+    #     args=[["gs_the_fresh"]],
+    #     name="Weekly_GS_The_Fresh"
+    # )
 
-    # [스케줄 3] 이마트 - 매주 목요일 새벽 1시
-    scheduler.add_job(
-        run_full_pipeline,
-        CronTrigger(day_of_week="thu", hour="1", minute="0"),
-        args=[["emart"]],
-        name="Weekly_Emart"
-    )
+    # # [스케줄 3] 이마트 - 매주 목요일 새벽 1시
+    # scheduler.add_job(
+    #     run_full_pipeline,
+    #     CronTrigger(day_of_week="thu", hour="1", minute="0"),
+    #     args=[["emart"]],
+    #     name="Weekly_Emart"
+    # )
 
     scheduler.start()
     print("⏰ 스케줄러가 시작되었습니다.")
     print("  - 매월 1일 01:00: 편의점 3사")
-    print("  - 매주 수요일 01:00: GS 더프레시")
-    print("  - 매주 목요일 01:00: 이마트")
+    # print("  - 매주 수요일 01:00: GS 더프레시")
+    # print("  - 매주 목요일 01:00: 이마트")
 
-    # 수동 실행 모드 처리
+    # 수동 실행 모드
     if len(sys.argv) > 1 and sys.argv[1] == "--manual":
-        target_store = sys.argv[2:] if len(sys.argv) > 2 else ["gs_the_fresh", "cu", "gs25", "seven_eleven", "emart"]
-        print(f"\n⚡ 수동 실행 모드 감지: {target_store} 작업을 즉시 실행합니다.")
-        await run_full_pipeline(target_store)
+        target = sys.argv[2:] if len(sys.argv) > 2 else ["cu", "gs25", "seven_eleven"]
+        print(f"\n⚡ 수동 실행: {target}")
+        await run_full_pipeline(target)
 
     # 서버가 종료되지 않도록 무한 대기
     try:
@@ -433,5 +370,4 @@ async def main():
         scheduler.shutdown()
 
 if __name__ == "__main__":
-    # 비동기 실행
     asyncio.run(main())
