@@ -211,8 +211,11 @@ async def find_best_price(
     preferred_store: str = None
 ) -> str:
     """
-    [검색 및 최저가 비교 전용] 
-    특정 상품명을 입력받아 현재 가장 저렴하게 판매 중인 매장을 찾습니다.
+    [특정 상품 최저가 검색]
+    사용자가 "OO 제일 싼 곳", "OO 어디가 싸?" 처럼 
+    **특정 상품 하나**의 최저가 매장을 찾을 때 사용합니다.
+    
+    예시 쿼리: "코카콜라 제일 싼 곳", "신라면 어디가 저렴해?"
 
     Args:
         keywords: 검색 키워드 + 동의어/브랜드 포함 (예: ["코카콜라", "콜라", "제로콜라"])
@@ -308,85 +311,115 @@ async def find_best_price(
     }, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def compare_category_top3(keywords: list[str]) -> str:
+async def compare_category_top3(
+    keywords: list[str],
+    category: str = None,
+    preferred_store: str = None
+) -> str:
     """
-    상품 카테고리(예: '라면', '음료', '고기')를 입력받아 각 편의점/마트별 가성비 TOP 3 리포트를 생성합니다.
-    사용자가 품목군 전체의 가격을 비교하고자 할 때 호출해줘.
+    [매장별 가성비 TOP3 비교]
+    사용자가 "OO 비교해줘", "편의점별 OO 뭐가 좋아?" 처럼
+    **카테고리 전체**를 매장별로 비교할 때 사용합니다.
     
-    - keywords: 검색 정확도를 높이기 위해 AI가 생성한 연관 단어 리스트
+    예시 쿼리: "라면 비교해줘", "편의점별 음료 가성비", "과자 어디가 좋아?"
+    
+    ❌ 이 도구 사용 X: "코카콜라 제일 싼 곳" (특정 상품 → find_best_price)
+    ✅ 이 도구 사용 O: "음료 비교해줘" (카테고리 비교)
+
+    Args:
+        keywords: 검색 키워드 + 동의어 (예: ["라면", "컵라면"])
+        category: 상품 카테고리 - get_available_tags()에서 선택
+        preferred_store: 특정 매장만 비교
     """
-    all_data_list = []
+    available_stores = ["cu", "gs25", "seven_eleven"]
     
-    # 1. 모든 DB 로드 및 store_id 주입 (파일명 기반 자동 태깅)
-    for filename in os.listdir(DB_DIR):
-        if filename.endswith(".json"):
-            target_store_id = None
-            for s_key in store_display_names.keys():
-                if s_key in filename.lower():
-                    target_store_id = s_key
-                    break
+    # 매장 필터링
+    if preferred_store:
+        target = preferred_store.lower().replace(" ", "")
+        available_stores = [s for s in available_stores if target in s]
+    
+    # 검색어 준비
+    search_keywords = [k.replace(" ", "").lower() for k in keywords]
+    main_keyword = search_keywords[0]
+    
+    # 매장별 결과 저장
+    report_data = {store: [] for store in available_stores}
+    
+    for store_id in available_stores:
+        file_path = os.path.join(DB_DIR, f"db_{store_id}_with_tags.json")
+        if not os.path.exists(file_path):
+            file_path = os.path.join(DB_DIR, f"db_{store_id}.json")
+        if not os.path.exists(file_path):
+            continue
             
-            if not target_store_id: continue
-
-            try:
-                with open(os.path.join(DB_DIR, filename), 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    for item in data.get("items", []):
-                        item["_internal_store_id"] = target_store_id
-                    all_data_list.append(data)
-            except: continue
-
-    # 2. 결과 저장소 및 검색어 준비
-    report_data = {store: [] for store in store_display_names.keys()}
-    clean_keywords = [k.replace(" ", "").lower() for k in keywords]
-    main_query = clean_keywords[0] # 사용자가 입력한 핵심 단어
-
-    for data in all_data_list:
-        for item in data.get("items", []):
-            p_name = item.get("product_name", "").lower()
-            p_name_no_space = p_name.replace(" ", "")
-            cat_name = item.get("category", "").lower()
-            s_id = item.get("_internal_store_id")
-            
-            # --- [핵심: 일반화된 지능형 필터링] ---
-            match_score = 0
-            
-            # 1. 단어 완전 일치 보너스 (노이즈 방지 핵심)
-            # '물'이 단독 단어로 있거나, 카테고리명이 검색어와 일치할 때 높은 점수
-            if any(k == cat_name or k in p_name.split() for k in clean_keywords):
-                match_score += 200 
-
-            # 2. 키워드 포함 점수 (순서에 따른 차등)
-            for i, kw in enumerate(clean_keywords):
-                if kw in p_name_no_space:
-                    # 첫 번째 키워드(메인 의도)일수록 높은 가중치
-                    weight = 100 if i == 0 else 30
-                    match_score += weight
-            
-            # 3. 부정 매칭 방어 (일반적 노이즈 단어 패턴 차단)
-            # 검색어는 짧은데 상품명은 너무 길고 카테고리가 다르면 감점
-            if len(main_query) <= 2 and len(p_name_no_space) > 10:
-                if main_query not in cat_name: # 카테고리에 검색어가 없다면 노이즈 확률 높음
-                    match_score -= 50
-
-            # --- [결과 처리] ---
-            # 점수가 일정 수준(예: 100점) 이상인 것만 '진짜'로 간주
-            if match_score >= 100:
-                if s_id in report_data:
-                    sort_price = item.get("price_per_unit") or item.get("effective_unit_price") or 0
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+            for item in data.get("items", []):
+                # 카테고리 필터링 (있으면)
+                if category:
+                    item_category = (item.get("category") or "").lower()
+                    if category.lower() != item_category:
+                        continue
+                
+                p_name = item.get("product_name", "").lower().replace(" ", "")
+                cat_name = (item.get("category") or "").lower()
+                
+                match_score = 0
+                
+                # 카테고리 일치 보너스
+                if any(k == cat_name for k in search_keywords):
+                    match_score += 200
+                
+                # 키워드 매칭
+                for i, kw in enumerate(search_keywords):
+                    if kw in p_name:
+                        match_score += 100 if i == 0 else 30
+                
+                # 짧은 검색어 노이즈 방지
+                if len(main_keyword) <= 2 and len(p_name) > 10:
+                    if main_keyword not in cat_name:
+                        match_score -= 50
+                
+                if match_score >= 100:
+                    sort_price = (
+                        item.get("price_per_unit") or 
+                        item.get("effective_unit_price") or 
+                        99999
+                    )
                     if 0 < sort_price < 999999:
-                        item["sort_price"] = sort_price
-                        item["match_score"] = match_score
-                        report_data[s_id].append(item)
-
-    # 4. 정렬 및 후보군 추출
-    final_payload = {}
-    for s_id, items in report_data.items():
+                        item["_score"] = match_score
+                        item["_sort_price"] = sort_price
+                        report_data[store_id].append(item)
+                        
+        except Exception as e:
+            print(f"Error reading {store_id}: {e}")
+    
+    # 정렬 및 TOP 3 추출
+    final_results = {}
+    for store_id, items in report_data.items():
         if items:
-            # 1순위: 연관 점수(진짜 상품인가?), 2순위: 가성비
-            final_payload[s_id] = sorted(items, key=lambda x: (-x["match_score"], x["sort_price"]))[:10]
-
-    return json.dumps(final_payload, ensure_ascii=False)
+            sorted_items = sorted(items, key=lambda x: (-x["_score"], x["_sort_price"]))[:3]
+            
+            display_name = store_display_names.get(store_id, store_id.upper())
+            final_results[display_name] = [{
+                "product_name": item.get("product_name"),
+                "discount_condition": item.get("discount_condition"),
+                "pay_price": item.get("sale_price"),
+                "get_count": 2 if "1+1" in item.get("discount_condition", "") else 3 if "2+1" in item.get("discount_condition", "") else 1,
+                "price_per_one": item.get("effective_unit_price") or item.get("unit_effective_unit_price"),
+                "category": item.get("category")
+            } for item in sorted_items]
+    
+    return json.dumps({
+        "query": {
+            "keywords": keywords,
+            "category": category,
+            "store": preferred_store
+        },
+        "results": final_results
+    }, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
     mcp.run()
