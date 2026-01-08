@@ -62,7 +62,7 @@ def get_available_tags() -> str:
 @mcp.tool()
 async def recommend_smart_snacks(
     keywords: list[str],
-    category: str = None,
+    categories: list[str] = None,
     situation_tags: list[str] = None,
     taste_tags: list[str] = None,
     preferred_store: str = None
@@ -74,7 +74,7 @@ async def recommend_smart_snacks(
 
     Args:
         keywords: 검색 키워드 + 브랜드/동의어 포함 (예: ["라면", "신라면", "컵라면"])
-        category: 상품 카테고리 - get_available_tags()의 category에서 선택 (⭐ 필수 권장 - 정확한 결과를 위해 반드시 선택)
+        categories: 🔥 여러 카테고리 동시 검색 가능 (예: ["음료", "과자", "빵"]) (⭐ 필수 권장 - 정확한 결과를 위해 반드시 선택)
         situation_tags: 상황 태그 - get_available_tags()의 situation에서 선택
         taste_tags: 맛 태그 - get_available_tags()의 taste에서 선택
         preferred_store: 선호 매장 - "cu", "gs25", "emart", "seven_eleven" 중 하나
@@ -111,8 +111,12 @@ async def recommend_smart_snacks(
         return json.dumps({"error": "데이터 로드 실패", "results": []}, ensure_ascii=False)
 
     # 3. 카테고리 필터링 (먼저 적용 - 성능 향상)
-    if category:
-        all_items = [item for item in all_items if item.get("category", "").lower() == category.lower()]
+    if categories:
+        categories_lower = [c.lower() for c in categories]
+        all_items = [
+            item for item in all_items 
+            if item.get("category", "").lower() in categories_lower
+        ]
 
     # 4. 검색 준비
     search_keywords = [k.lower().strip() for k in keywords if k]
@@ -196,7 +200,7 @@ async def recommend_smart_snacks(
     return json.dumps({
         "query": {
             "keywords": keywords,
-            "category": category,
+            "categories": categories,  # category → categories
             "situation_tags": situation_tags,
             "taste_tags": taste_tags,
             "store": preferred_store
