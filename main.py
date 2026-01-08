@@ -206,106 +206,105 @@ async def recommend_smart_snacks(
     }, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def find_best_price(keywords: list[str]) -> str:
+async def find_best_price(
+    keywords: list[str],
+    preferred_store: str = None
+) -> str:
     """
     [검색 및 최저가 비교 전용] 
-    특정 상품명(예: '불닭볶음면 봉지', '코카콜라 500ml')을 입력받아 현재 가장 저렴하게 판매 중인 매장 정보를 찾습니다.
-    사용자가 구체적인 상품을 언급하며 최저가를 물을 때 사용하세요.
+    특정 상품명을 입력받아 현재 가장 저렴하게 판매 중인 매장을 찾습니다.
 
-    - keywords: 검색 정확도를 높이기 위해 AI가 생성한 연관 단어 리스트
+    Args:
+        keywords: 검색 키워드 + 동의어/브랜드 포함 (예: ["코카콜라", "콜라", "제로콜라"])
+        preferred_store: 특정 매장만 검색 - "cu", "gs25", "seven_eleven" 중 하나
     """
-    product_keyword = keywords[0] if isinstance(keywords, list) else keywords
-
-    # 1. 의도 분석 (매장 필터링 및 핵심 키워드 분리)
-    analysis_prompt = f"""
-    사용자 검색어: "{product_keyword}"
-    분석 항목:
-    - target_store: 언급된 매장 (CU, GS25, EMART, SEVEN_ELEVEN 등 / 없으면 null)
-    - clean_keyword: 매장명을 제외한 순수 상품 검색어
-    - specs: 제로, 무설탕, 대용량 등 특징
-    형식: JSON
-    """
+    if not keywords:
+        return json.dumps({"error": "키워드를 입력해주세요"}, ensure_ascii=False)
     
-    intent_res = await asyncio.to_thread(model.generate_content, analysis_prompt)
-    intent = json.loads(intent_res.text.replace("```json", "").replace("```", ""))
-    
-    target_store = intent.get('target_store')
-    clean_query = intent.get('clean_keyword', product_keyword)
-    search_terms = keywords if isinstance(keywords, list) else [clean_query]
+    main_keyword = keywords[0]
+    search_terms = [term.replace(" ", "").lower() for term in keywords]
 
-    # 2. 통합 DB 로드 및 필터링
+    # 1. DB 로드 및 필터링
     all_matched_items = []
-    # 검색할 전체 스토어 목록 (확장된 리스트)
-    available_stores = ["cu", "emart", "gs_the_fresh", "gs25", "seven_eleven"] 
+    available_stores = ["cu", "gs25", "seven_eleven"]
+    
+    # 매장 필터링
+    if preferred_store:
+        target = preferred_store.lower().replace(" ", "")
+        available_stores = [s for s in available_stores if target in s]
     
     for store_id in available_stores:
-        # 사용자가 특정 매장을 지정했다면 해당 매장만 검색 (유연한 필터)
-        if target_store and target_store.lower() not in store_id.lower():
+        file_path = os.path.join(DB_DIR, f"db_{store_id}_with_tags.json")
+        if not os.path.exists(file_path):
+            file_path = os.path.join(DB_DIR, f"db_{store_id}.json")
+        if not os.path.exists(file_path):
             continue
             
-        file_path = os.path.join(DB_DIR, f"db_{store_id}.json")
-        enriched_path = os.path.join(DB_DIR, f"db_{store_id}_with_tags.json")
-        target_path = enriched_path if os.path.exists(enriched_path) else file_path
-        
-        if not os.path.exists(target_path): continue
-
-        display_name = store_display_names.get(store_id, store_id)
-            
         try:
-            with open(target_path, "r", encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 items = data.get("items") if isinstance(data, dict) else data
-                if not isinstance(items, list): continue
+                if not isinstance(items, list):
+                    continue
                 
                 for item in items:
                     p_name_clean = item.get("product_name", "").lower().replace(" ", "")
-                    tags_clean = f"{item.get('brand','')} {item.get('category','')} {item.get('taste','')} {item.get('situation','')}".lower().replace(" ", "")
                     
                     match_score = 0
-                    clean_search_terms = [term.replace(" ", "").lower() for term in search_terms]
                     
-                    # --- [핵심 수정: 가중치 기반 스코어링] ---
-                    for i, term in enumerate(clean_search_terms):
+                    # 스코어링
+                    for i, term in enumerate(search_terms):
                         if term in p_name_clean:
-                            if i == 0:
-                                # 1순위 키워드(사용자 직접 입력) 매칭 시 압도적 점수
-                                match_score += 100 
-                            else:
-                                # 유사어 매칭 시 보조 점수 (후보군 유지용)
-                                match_score += 20 
+                            match_score += 100 if i == 0 else 20
                     
-                    # B. 태그 매칭 가산점 (기존 유지)
-                    if any(term in tags_clean for term in clean_search_terms):
-                        match_score += 10
-
-                    # --- [결과 처리: 기존 로직 유지] ---
-                    # match_score가 100점 이상이면 1순위 키워드가 포함된 것이므로 확실히 필터 통과
                     if match_score >= 50:
                         display_name = store_display_names.get(store_id, store_id.upper())
                         item["match_score"] = match_score
                         item["store_name"] = display_name
-                        item["sort_price"] = item.get("price_per_unit") or item.get("effective_unit_price") or 99999
-                        all_matched_items.append(item)  
+                        item["sort_price"] = (
+                            item.get("price_per_unit") or 
+                            item.get("effective_unit_price") or 
+                            99999
+                        )
+                        all_matched_items.append(item)
                         
         except Exception as e:
             print(f"Error reading {store_id}: {e}")
 
     if not all_matched_items:
-        return f"'{product_keyword}'에 대한 행사 정보를 찾지 못했습니다."
+        return json.dumps({
+            "error": f"'{main_keyword}'에 대한 행사 정보를 찾지 못했습니다.",
+            "results": []
+        }, ensure_ascii=False)
 
+    # 정렬: 매칭 점수 높은 순 → 가격 낮은 순
     all_matched_items.sort(key=lambda x: (-x["match_score"], x["sort_price"]))
 
     best = all_matched_items[0]
-    ref_label = best.get("price_reference", "개당")
+    condition = best.get("discount_condition", "")
     
-    summary = (f"'{product_keyword}'와 가장 유사한 상품 {len(all_matched_items)}개를 찾았습니다. "
-               f"{best['store_name']}의 '{best['product_name']}'이 "
-               f"{ref_label} {int(best['sort_price']):,}원으로 추천 1순위입니다.")
-
     return json.dumps({
-        "summary": summary,
-        "best_deal": best,
-        "all_results": all_matched_items[:10] # 상위 10개만 전달
+        "query": {
+            "keywords": keywords,
+            "store": preferred_store
+        },
+        "total_found": len(all_matched_items),
+        "best_deal": {
+            "product_name": best.get("product_name"),
+            "store": best.get("store_name"),
+            "discount_condition": condition,
+            "pay_price": best.get("sale_price"),
+            "get_count": 2 if "1+1" in condition else 3 if "2+1" in condition else 1,
+            "price_per_one": best.get("effective_unit_price") or best.get("unit_effective_unit_price"),
+            "image_url": best.get("image_url")
+        },
+        "all_results": [{
+            "product_name": item.get("product_name"),
+            "store": item.get("store_name"),
+            "discount_condition": item.get("discount_condition"),
+            "pay_price": item.get("sale_price"),
+            "price_per_one": item.get("effective_unit_price") or item.get("unit_effective_unit_price")
+        } for item in all_matched_items[:10]]
     }, ensure_ascii=False, indent=2)
 
 @mcp.tool()
