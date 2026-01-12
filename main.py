@@ -35,9 +35,9 @@ def decode_unicode(text: str) -> str:
     if not text:
         return text
     try:
-        # \\uXXXX 패턴이 있으면 디코딩
-        if '\\u' in text:
-            return text.encode().decode('unicode_escape')
+        def replace_unicode(match):
+            return chr(int(match.group(1), 16))
+        return re.sub(r'\\u([0-9a-fA-F]{4})', replace_unicode, text)
     except:
         pass
     return text
@@ -483,6 +483,10 @@ async def compare_category_top3(
                 cat_name = (item.get("category") or "").lower()
                 
                 match_score = 0
+
+                 # category 필터 통과하면 기본 점수
+                if category:
+                    match_score += 100
                 
                 # 카테고리 일치 보너스
                 if any(k == cat_name for k in search_keywords):
@@ -495,8 +499,8 @@ async def compare_category_top3(
                 
                 if match_score >= 100:
                     sort_price = (
-                        item.get("price_per_unit") or 
-                        item.get("effective_unit_price") or 
+                        item.get("effective_unit_price") or
+                        item.get("price_per_unit") or
                         99999
                     )
                     if 0 < sort_price < 999999:

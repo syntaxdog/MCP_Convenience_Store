@@ -328,7 +328,7 @@ async def main():
     # 1 1 0 이 기본
     scheduler.add_job(
         run_full_pipeline,
-        CronTrigger(day="8", hour="17", minute="53"),
+        CronTrigger(day="1", hour="1", minute="0"),
         args=[["cu", "gs25", "seven_eleven"]],
         name="Monthly_Convenience_Stores"
     )
