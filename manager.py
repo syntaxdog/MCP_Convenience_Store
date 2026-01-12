@@ -27,7 +27,6 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-3-flash-preview")
 
-
 # ==========================================
 # 태그 후보 관리
 # ==========================================
@@ -172,6 +171,10 @@ async def _get_tags_logic(product_names: list):
     [절대 규칙]
     1. product_name: 입력된 상품명을 절대 수정하지 말고 그대로 적으세요.
     2. category, taste, situation은 반드시 아래 허용 목록에서만 선택하세요.
+    3. unit_value: 상품명에 용량이 명시된 경우만 추출. 없으면 null
+    4. unit_type: 상품명에 단위가 명시된 경우만 추출. 없으면 null
+
+⚠️ 상품명에 용량 정보가 없으면 절대 추측하지 말 것!
 
     [category 허용 목록] - 1개만 선택
     {candidates['category']}
@@ -193,6 +196,10 @@ async def _get_tags_logic(product_names: list):
     - situation: 위 목록에서 선택, 쉼표 구분 문자열
     - target: 주요 타겟 (예: "학생, 직장인")
 
+    [선택 필드 - 상품명에 명시된 경우만]
+    - unit_value: 총 용량 (예: "200g*2팩" -> 400) (없으면 null 값 대입)
+    - unit_type: 단위 (ml, g, 개, 매 등) (없으면 null 값 대입)
+
     [주의사항]
     - 목록에 없는 태그 절대 사용 금지
     - taste, situation은 문자열로 (배열 아님)
@@ -203,9 +210,9 @@ async def _get_tags_logic(product_names: list):
     [응답 예시]
     [
       {{
-        "product_name": "포카리스웨트 500ml",
-        "unit_value": 500,
-        "unit_type": "ml",
+        "product_name": "포카리스웨트",
+        "unit_value": null,
+        "unit_type": null,
         "effective_unit_price": 2000,
         "brand": "동아오츠카",
         "category": "음료",

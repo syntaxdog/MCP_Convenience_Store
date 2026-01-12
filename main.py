@@ -47,10 +47,227 @@ def decode_unicode(text: str) -> str:
 # ==========================================
 
 @mcp.tool()
+async def find_best_price(
+    keywords: list[str],
+    preferred_store: str = None
+) -> str:
+    """
+    [특정 상품 최저가 검색]
+    사용자가 "OO 제일 싼 곳", "OO 어디가 싸?" 처럼 
+    **특정 상품 하나**의 최저가 매장을 찾을 때 사용합니다.
+    
+    예시 쿼리: "코카콜라 제일 싼 곳", "신라면 어디가 저렴해?"
+
+    Args:
+        keywords: 검색 키워드 + 동의어/브랜드 포함 (예: ["코카콜라", "콜라", "제로콜라"])
+        preferred_store: 특정 매장만 검색 - "cu", "gs25", "seven_eleven" 중 하나
+    """
+    if not keywords:
+        return json.dumps({"error": "키워드를 입력해주세요"}, ensure_ascii=False)
+    
+    main_keyword = keywords[0]
+    search_terms = [term.replace(" ", "").lower() for term in keywords]
+
+    all_matched_items = []
+    available_stores = list(STORE_NAMES.keys())
+    
+    # 매장 필터링
+    if preferred_store:
+        target = preferred_store.lower().replace(" ", "")
+        available_stores = [s for s in available_stores if target in s]
+    
+    for store_id in available_stores:
+        file_path = os.path.join(DB_DIR, f"db_{store_id}_with_tags.json")
+        if not os.path.exists(file_path):
+            file_path = os.path.join(DB_DIR, f"db_{store_id}.json")
+        if not os.path.exists(file_path):
+            continue
+            
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                items = data.get("items") if isinstance(data, dict) else data
+                if not isinstance(items, list):
+                    continue
+                
+                for item in items:
+                    p_name_clean = item.get("product_name", "").lower().replace(" ", "")
+                    
+                    match_score = 0
+                    for i, term in enumerate(search_terms):
+                        if term in p_name_clean:
+                            match_score += 100 if i == 0 else 20
+                    
+                    if match_score >= 50:
+                        display_name = STORE_NAMES.get(store_id, store_id.upper())
+                        item["match_score"] = match_score
+                        item["store_name"] = display_name
+                        item["sort_price"] = (
+                            item.get("price_per_unit") or 
+                            item.get("effective_unit_price") or 
+                            99999
+                        )
+                        all_matched_items.append(item)
+                        
+        except Exception as e:
+            print(f"Error reading {store_id}: {e}")
+
+    if not all_matched_items:
+        return json.dumps({
+            "error": f"'{main_keyword}'에 대한 행사 정보를 찾지 못했습니다.",
+            "results": []
+        }, ensure_ascii=False)
+
+    # 정렬: 매칭 점수 높은 순 → 가격 낮은 순
+    all_matched_items.sort(key=lambda x: (-x["match_score"], x["sort_price"]))
+
+    best = all_matched_items[0]
+    condition = best.get("discount_condition", "")
+    
+    return json.dumps({
+        "query": {
+            "keywords": keywords,
+            "store": preferred_store
+        },
+        "total_found": len(all_matched_items),
+        "best_deal": {
+            "product_name": best.get("product_name"),
+            "store": best.get("store_name"),
+            "discount_condition": condition,
+            "pay_price": best.get("sale_price"),
+            "get_count": 2 if "1+1" in condition else 3 if "2+1" in condition else 1,
+            "price_per_one": best.get("effective_unit_price") or best.get("unit_effective_unit_price"),
+            "image_url": best.get("image_url")
+        },
+        "all_results": [{
+            "product_name": item.get("product_name"),
+            "store": item.get("store_name"),
+            "discount_condition": item.get("discount_condition"),
+            "pay_price": item.get("sale_price"),
+            "price_per_one": item.get("effective_unit_price") or item.get("unit_effective_unit_price")
+        } for item in all_matched_items[:10]]
+    }, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def find_best_value(
+    keywords: list[str],
+    preferred_store: str = None
+) -> str:
+    """
+    [용량 대비 가성비 검색]
+    "OO 가성비", "OO 용량 대비 싼 거" 처럼 
+    100ml당/100g당 가격 기준으로 가성비 최고 상품을 찾습니다.
+    
+    예시: "콜라 가성비", "과자 용량 대비", "음료 ml당 싼 거"
+    
+    ❌ 이 도구 사용 X: "콜라 제일 싼 곳" (절대 최저가 → find_best_price)
+    ✅ 이 도구 사용 O: "콜라 가성비 좋은 거" (용량 대비 가격)
+
+    Args:
+        keywords: 검색 키워드 + 동의어/브랜드 (예: ["코카콜라", "콜라"])
+        preferred_store: 특정 매장만 검색 - "cu", "gs25", "seven_eleven" 중 하나
+    """
+    if not keywords:
+        return json.dumps({"error": "키워드를 입력해주세요"}, ensure_ascii=False)
+    
+    keywords = [decode_unicode(k) for k in keywords]
+    main_keyword = keywords[0]
+    search_terms = [term.replace(" ", "").lower() for term in keywords]
+
+    all_matched_items = []
+    available_stores = list(STORE_NAMES.keys())
+    
+    # 매장 필터링
+    if preferred_store:
+        target = preferred_store.lower().replace(" ", "")
+        available_stores = [s for s in available_stores if target in s]
+    
+    for store_id in available_stores:
+        file_path = os.path.join(DB_DIR, f"db_{store_id}_with_tags.json")
+        if not os.path.exists(file_path):
+            file_path = os.path.join(DB_DIR, f"db_{store_id}.json")
+        if not os.path.exists(file_path):
+            continue
+            
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                items = data.get("items") if isinstance(data, dict) else data
+                if not isinstance(items, list):
+                    continue
+                
+                for item in items:
+                    p_name_clean = item.get("product_name", "").lower().replace(" ", "")
+                    
+                    match_score = 0
+                    for i, term in enumerate(search_terms):
+                        if term in p_name_clean:
+                            match_score += 100 if i == 0 else 20
+                    
+                    if match_score >= 50:
+                        # 용량당 가격이 있는 상품만
+                        price_per_unit = item.get("price_per_unit")
+                        if not price_per_unit or price_per_unit <= 0:
+                            continue
+                            
+                        display_name = STORE_NAMES.get(store_id, store_id.upper())
+                        item["match_score"] = match_score
+                        item["store_name"] = display_name
+                        item["sort_price"] = price_per_unit  # 용량당 가격으로 정렬!
+                        all_matched_items.append(item)
+                        
+        except Exception as e:
+            print(f"Error reading {store_id}: {e}")
+
+    if not all_matched_items:
+        return json.dumps({
+            "error": f"'{main_keyword}'에 대한 용량 정보가 있는 행사 상품을 찾지 못했습니다.",
+            "results": []
+        }, ensure_ascii=False)
+
+    # 정렬: 매칭 점수 높은 순 → 용량당 가격 낮은 순
+    all_matched_items.sort(key=lambda x: (-x["match_score"], x["sort_price"]))
+
+    best = all_matched_items[0]
+    condition = best.get("discount_condition", "")
+    
+    return json.dumps({
+        "query": {
+            "keywords": keywords,
+            "store": preferred_store
+        },
+        "total_found": len(all_matched_items),
+        "best_value": {
+            "product_name": best.get("product_name"),
+            "store": best.get("store_name"),
+            "discount_condition": condition,
+            "pay_price": best.get("sale_price"),
+            "get_count": 2 if "1+1" in condition else 3 if "2+1" in condition else 1,
+            "price_per_one": best.get("effective_unit_price") or best.get("unit_effective_unit_price"),
+            "unit_value": best.get("unit_value"),
+            "unit_type": best.get("unit_type"),
+            "price_per_unit": best.get("price_per_unit"),
+            "price_reference": best.get("price_reference"),
+            "image_url": best.get("image_url")
+        },
+        "all_results": [{
+            "product_name": item.get("product_name"),
+            "store": item.get("store_name"),
+            "discount_condition": item.get("discount_condition"),
+            "pay_price": item.get("sale_price"),
+            "price_per_one": item.get("effective_unit_price") or item.get("unit_effective_unit_price"),
+            "unit_value": item.get("unit_value"),
+            "unit_type": item.get("unit_type"),
+            "price_per_unit": item.get("price_per_unit"),
+            "price_reference": item.get("price_reference")
+        } for item in all_matched_items[:10]]
+    }, ensure_ascii=False, indent=2)
+
+@mcp.tool()
 def get_available_tags() -> dict:
     """
     검색에 사용 가능한 태그 목록을 반환합니다.
-    recommend_smart_snacks 호출 전에 이 목록에서 선택하세요.
+    recommend_smart_snacks, compare_category_top3 호출 전에 이 목록에서 선택하세요.
     """
     return TAG_CANDIDATES
 
@@ -65,7 +282,8 @@ async def recommend_smart_snacks(
     """
     [실시간 편의점 행사 기반 스마트 추천]
     
-    ⚠️ 호출 전 get_available_tags()로 태그 목록을 확인하고 선택하세요.
+    ⚠️⚠️⚠️ 중요: 이 도구 호출 전 반드시 get_available_tags()를 먼저 호출하여 
+    category 값을 확인하세요.
 
     Args:
         keywords: 검색 키워드 + 브랜드/동의어 포함 (예: ["라면", "신라면", "컵라면"])
@@ -209,119 +427,20 @@ async def recommend_smart_snacks(
     }, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def find_best_price(
-    keywords: list[str],
-    preferred_store: str = None
-) -> str:
-    """
-    [특정 상품 최저가 검색]
-    사용자가 "OO 제일 싼 곳", "OO 어디가 싸?" 처럼 
-    **특정 상품 하나**의 최저가 매장을 찾을 때 사용합니다.
-    
-    예시 쿼리: "코카콜라 제일 싼 곳", "신라면 어디가 저렴해?"
-
-    Args:
-        keywords: 검색 키워드 + 동의어/브랜드 포함 (예: ["코카콜라", "콜라", "제로콜라"])
-        preferred_store: 특정 매장만 검색 - "cu", "gs25", "seven_eleven" 중 하나
-    """
-    if not keywords:
-        return json.dumps({"error": "키워드를 입력해주세요"}, ensure_ascii=False)
-    
-    main_keyword = keywords[0]
-    search_terms = [term.replace(" ", "").lower() for term in keywords]
-
-    all_matched_items = []
-    available_stores = list(STORE_NAMES.keys())
-    
-    # 매장 필터링
-    if preferred_store:
-        target = preferred_store.lower().replace(" ", "")
-        available_stores = [s for s in available_stores if target in s]
-    
-    for store_id in available_stores:
-        file_path = os.path.join(DB_DIR, f"db_{store_id}_with_tags.json")
-        if not os.path.exists(file_path):
-            file_path = os.path.join(DB_DIR, f"db_{store_id}.json")
-        if not os.path.exists(file_path):
-            continue
-            
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                items = data.get("items") if isinstance(data, dict) else data
-                if not isinstance(items, list):
-                    continue
-                
-                for item in items:
-                    p_name_clean = item.get("product_name", "").lower().replace(" ", "")
-                    
-                    match_score = 0
-                    for i, term in enumerate(search_terms):
-                        if term in p_name_clean:
-                            match_score += 100 if i == 0 else 20
-                    
-                    if match_score >= 50:
-                        display_name = STORE_NAMES.get(store_id, store_id.upper())
-                        item["match_score"] = match_score
-                        item["store_name"] = display_name
-                        item["sort_price"] = (
-                            item.get("price_per_unit") or 
-                            item.get("effective_unit_price") or 
-                            99999
-                        )
-                        all_matched_items.append(item)
-                        
-        except Exception as e:
-            print(f"Error reading {store_id}: {e}")
-
-    if not all_matched_items:
-        return json.dumps({
-            "error": f"'{main_keyword}'에 대한 행사 정보를 찾지 못했습니다.",
-            "results": []
-        }, ensure_ascii=False)
-
-    # 정렬: 매칭 점수 높은 순 → 가격 낮은 순
-    all_matched_items.sort(key=lambda x: (-x["match_score"], x["sort_price"]))
-
-    best = all_matched_items[0]
-    condition = best.get("discount_condition", "")
-    
-    return json.dumps({
-        "query": {
-            "keywords": keywords,
-            "store": preferred_store
-        },
-        "total_found": len(all_matched_items),
-        "best_deal": {
-            "product_name": best.get("product_name"),
-            "store": best.get("store_name"),
-            "discount_condition": condition,
-            "pay_price": best.get("sale_price"),
-            "get_count": 2 if "1+1" in condition else 3 if "2+1" in condition else 1,
-            "price_per_one": best.get("effective_unit_price") or best.get("unit_effective_unit_price"),
-            "image_url": best.get("image_url")
-        },
-        "all_results": [{
-            "product_name": item.get("product_name"),
-            "store": item.get("store_name"),
-            "discount_condition": item.get("discount_condition"),
-            "pay_price": item.get("sale_price"),
-            "price_per_one": item.get("effective_unit_price") or item.get("unit_effective_unit_price")
-        } for item in all_matched_items[:10]]
-    }, ensure_ascii=False, indent=2)
-
-@mcp.tool()
 async def compare_category_top3(
     keywords: list[str],
     category: str = None,
     preferred_store: str = None
 ) -> str:
     """
-    [매장별 가성비 TOP3 비교]
+    [매장별 최저가 TOP3 비교]
     사용자가 "OO 비교해줘", "편의점별 OO 뭐가 좋아?" 처럼
     **카테고리 전체**를 매장별로 **비교**할 때 사용합니다.
     
     예시 쿼리: "라면 비교해줘", "편의점별 음료 가성비", "과자 어디가 좋아?"
+
+    ⚠️⚠️⚠️ 중요: 이 도구 호출 전 반드시 get_available_tags()를 먼저 호출하여 
+    category 값을 확인하세요.
     
     ❌ 이 도구 사용 X: "코카콜라 제일 싼 곳" (특정 상품 → find_best_price)
     ✅ 이 도구 사용 O: "음료 비교해줘" (카테고리 비교)
@@ -340,7 +459,6 @@ async def compare_category_top3(
         available_stores = [s for s in available_stores if target in s]
     
     search_keywords = [k.replace(" ", "").lower() for k in keywords]
-    main_keyword = search_keywords[0]
     
     report_data = {store: [] for store in available_stores}
     
@@ -374,11 +492,6 @@ async def compare_category_top3(
                 for i, kw in enumerate(search_keywords):
                     if kw in p_name:
                         match_score += 100 if i == 0 else 30
-                
-                # 짧은 검색어 노이즈 방지
-                if len(main_keyword) <= 2 and len(p_name) > 10:
-                    if main_keyword not in cat_name:
-                        match_score -= 50
                 
                 if match_score >= 100:
                     sort_price = (
