@@ -222,7 +222,7 @@ async def get_gs25_deals():
                             "product_name": item.get("goodsNm", ""),
                             "original_price": price,
                             "sale_price" : price if event_key == "ONE_TO_ONE" else (price*2),
-                            "unit_effective_unit_price": price // 2 if event_key == "ONE_TO_ONE" else (price * 2) // 3,
+                            "effective_unit_price": price // 2 if event_key == "ONE_TO_ONE" else (price * 2) // 3,
                             "discount_condition": event_name,
                             "image_url": item.get("attFileNm") or item.get("attFileNmOld", "")
                         })
@@ -275,7 +275,7 @@ async def get_seven_eleven_deals():
                             "product_name": name_el.get_text(strip=True),
                             "original_price": price,
                             "sale_price" : price if "1+1" in tag else price*2 if "2+1" in tag else price,
-                            "unit_effective_unit_price": price // 2 if "1+1" in tag else (price * 2) // 3 if "2+1" in tag else price,
+                            "effective_unit_price": price // 2 if "1+1" in tag else (price * 2) // 3 if "2+1" in tag else price,
                             "discount_condition": tag,
                             "image_url": "https://www.7-eleven.co.kr" + li.select_one("img")["src"] if li.select_one("img") else ""
                         })
@@ -296,8 +296,8 @@ async def run_full_pipeline(stores):
     
     # 1단계: 수집 (크롤링)
     tasks = []
-    if "gs_the_fresh" in stores: tasks.append(get_gs_the_fresh_deals())
-    if "emart" in stores: tasks.append(get_emart_deals())
+    # if "gs_the_fresh" in stores: tasks.append(get_gs_the_fresh_deals())
+    # if "emart" in stores: tasks.append(get_emart_deals())
     if "cu" in stores: tasks.append(get_cu_deals())
     if "gs25" in stores: tasks.append(get_gs25_deals())
     if "seven_eleven" in stores: tasks.append(get_seven_eleven_deals())
@@ -328,7 +328,7 @@ async def main():
     # 1 1 0 이 기본
     scheduler.add_job(
         run_full_pipeline,
-        CronTrigger(day="1", hour="1", minute="0"),
+        CronTrigger(day="13", hour="17", minute="45"),
         args=[["cu", "gs25", "seven_eleven"]],
         name="Monthly_Convenience_Stores"
     )

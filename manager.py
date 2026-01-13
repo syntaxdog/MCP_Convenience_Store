@@ -19,7 +19,8 @@ import google.generativeai as genai
 load_dotenv()
 DB_DIR = os.path.join(os.path.dirname(__file__), "db")
 TAG_CANDIDATES_PATH = os.path.join(DB_DIR, "tag_candidates.json")
-GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY")
+# GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
     raise ValueError("API 키가 설정되지 않았습니다. .env 파일을 확인해주세요.")
@@ -37,9 +38,9 @@ async def generate_tag_candidates():
     편의점 상품 태깅용 태그 후보를 만들어줘.
     
     [조건]
-    - category: 상품 분류 70개 (명확하게 구분, 겹치지 않게)
-    - taste: 맛/식감 표현 70개 (명확하게 구분, 겹치지 않게)
-    - situation: 상황/용도 70개 (명확하게 구분, 겹치지 않게)
+    - category: 상품 분류 50개 (명확하게 구분, 겹치지 않게)
+    - taste: 맛/식감 표현 50개 (명확하게 구분, 겹치지 않게)
+    - situation: 상황/용도 50개 (명확하게 구분, 겹치지 않게)
     - 모두 짧고 명확한 단어로 (2글자 이상, 10글자 이하)
     
     [category 예시]
@@ -84,6 +85,8 @@ def load_tag_candidates() -> dict:
     if os.path.exists(TAG_CANDIDATES_PATH):
         with open(TAG_CANDIDATES_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
+
+    print(f"⚠️ tag_candidates.json 파일이 없습니다: {TAG_CANDIDATES_PATH}")
     return {"category": [], "taste": [], "situation": []}
 
 # ==========================================
@@ -250,8 +253,8 @@ async def enrich_db_with_tags_high_speed(store_name: str) -> str:
     
     # 태깅 대상 추출 (중복 제거 및 미분류 상품 대상)
     to_tag_names = list(set([
-        item["product_name"] for item in items 
-        if "category" not in item or not item["category"] or item["category"] == "미분류"
+        item.get("product_name","") for item in items
+        if item.get("product_name") and ("category" not in item or not item["category"] or item["category"] == "미분류")
     ]))
     
     if not to_tag_names: 
@@ -259,7 +262,7 @@ async def enrich_db_with_tags_high_speed(store_name: str) -> str:
 
     print(f"🚀 [{store_name}] 병렬 분석 시작... 대상 상품: {len(to_tag_names)}개")
 
-    chunk_size = 150  # Gemini 처리 적정량
+    chunk_size = 100  # Gemini 처리 적정량
     chunks = [to_tag_names[i:i + chunk_size] for i in range(0, len(to_tag_names), chunk_size)]
     semaphore = asyncio.Semaphore(30) # 동시 요청 10개 제한 (할당량 방어)
 
@@ -296,15 +299,18 @@ async def enrich_db_with_tags_high_speed(store_name: str) -> str:
             info = tagged_library[current_key]
             
             # LLM이 추출한 용량 정보
-            u_val = info.get("unit_value", 1)
-            u_type = info.get("unit_type", "개")
-            
+            u_val = info.get("unit_value") or 1
+            u_type = info.get("unit_type") or "개"
+
             # 문자 섞여 있으면 숫자만 추출
             if isinstance(u_val, str):
                 nums = re.findall(r'\d+', u_val)
                 u_val = int(nums[0]) if nums else 1
             else:
-                u_val = int(u_val)
+                try:
+                    u_val = int(float(u_val))
+                except (TypeError, ValueError):
+                    u_val = 1
 
             raw_eff_price = item.get("unit_effective_unit_price") or item.get("effective_unit_price") or 0
             try:

@@ -22,9 +22,9 @@ mcp = FastMCP("Convenience Store Smart Bot")
 DB_DIR = os.path.join(os.path.dirname(__file__), "db")
 
 STORE_NAMES = {
-    "cu": "편의점 CU",
-    "gs25": "편의점 GS25",
-    "seven_eleven": "편의점 세븐일레븐"
+    "cu": "CU",
+    "gs25": "GS25",
+    "seven_eleven": "세븐일레븐"
 }
 
 # 태그 후보 미리 로드 (성능 향상)
@@ -52,15 +52,17 @@ async def find_best_price(
     preferred_store: str = None
 ) -> str:
     """
-    [특정 상품 최저가 검색]
-    사용자가 "OO 제일 싼 곳", "OO 어디가 싸?" 처럼 
-    **특정 상품 하나**의 최저가 매장을 찾을 때 사용합니다.
-    
-    예시 쿼리: "코카콜라 제일 싼 곳", "신라면 어디가 저렴해?"
+    [특정 상품 최저가 찾기]
+    사용자가 지정한 특정 상품(예: 코카콜라, 신라면)을 가장 저렴하게 판매하는 매장을 찾습니다.
+    단순히 가격이 가장 낮은 곳을 찾을 때 사용하세요.
+
+    ✅ 사용 예시:
+    - "코카콜라 최저가 알려줘."
+    - "신라면 어디가 제일 싸?"
 
     Args:
-        keywords: 검색 키워드 + 동의어/브랜드 포함 (예: ["코카콜라", "콜라", "제로콜라"])
-        preferred_store: 특정 매장만 검색 - "cu", "gs25", "seven_eleven" 중 하나
+        keywords: 검색할 상품명 키워드 (예: ["코카콜라", "콜라"])
+        preferred_store: (선택) 특정 편의점만 검색 ("cu", "gs25", "seven_eleven")
     """
     if not keywords:
         return json.dumps({"error": "키워드를 입력해주세요"}, ensure_ascii=False)
@@ -102,11 +104,15 @@ async def find_best_price(
                         display_name = STORE_NAMES.get(store_id, store_id.upper())
                         item["match_score"] = match_score
                         item["store_name"] = display_name
-                        item["sort_price"] = (
-                            item.get("price_per_unit") or 
-                            item.get("effective_unit_price") or 
-                            99999
+                        raw_price = (
+                        item.get("effective_unit_price")
                         )
+                        try:
+                            price = float(raw_price)
+                        except (TypeError, ValueError):
+                            price = 99999
+
+                        item["sort_price"] = price
                         all_matched_items.append(item)
                         
         except Exception as e:
@@ -118,34 +124,25 @@ async def find_best_price(
             "results": []
         }, ensure_ascii=False)
 
-    # 정렬: 매칭 점수 높은 순 → 가격 낮은 순
-    all_matched_items.sort(key=lambda x: (-x["match_score"], x["sort_price"]))
+    # 1단계: 키워드 점수로 관련성 높은 10개 선별
+    all_matched_items.sort(key=lambda x: -x["match_score"])
+    top_relevant = all_matched_items[:10]
 
-    best = all_matched_items[0]
-    condition = best.get("discount_condition", "")
-    
+    # 2단계: 그 10개를 가격으로 정렬
+    top_relevant.sort(key=lambda x: x["sort_price"])
+
     return json.dumps({
         "query": {
             "keywords": keywords,
             "store": preferred_store
         },
-        "total_found": len(all_matched_items),
-        "best_deal": {
-            "product_name": best.get("product_name"),
-            "store": best.get("store_name"),
-            "discount_condition": condition,
-            "pay_price": best.get("sale_price"),
-            "get_count": 2 if "1+1" in condition else 3 if "2+1" in condition else 1,
-            "price_per_one": best.get("effective_unit_price") or best.get("unit_effective_unit_price"),
-            "image_url": best.get("image_url")
-        },
-        "all_results": [{
+        "results": [{
             "product_name": item.get("product_name"),
             "store": item.get("store_name"),
             "discount_condition": item.get("discount_condition"),
             "pay_price": item.get("sale_price"),
-            "price_per_one": item.get("effective_unit_price") or item.get("unit_effective_unit_price")
-        } for item in all_matched_items[:10]]
+            "price_per_one": item.get("effective_unit_price")
+        } for item in top_relevant[:10]]
     }, ensure_ascii=False, indent=2)
 
 @mcp.tool()
@@ -154,68 +151,78 @@ async def find_best_value(
     preferred_store: str = None
 ) -> str:
     """
-    [용량 대비 가성비 검색]
-    "OO 가성비", "OO 용량 대비 싼 거" 처럼 
-    100ml당/100g당 가격 기준으로 가성비 최고 상품을 찾습니다.
-    
-    예시: "콜라 가성비", "과자 용량 대비", "음료 ml당 싼 거"
-    
-    ❌ 이 도구 사용 X: "콜라 제일 싼 곳" (절대 최저가 → find_best_price)
-    ✅ 이 도구 사용 O: "콜라 가성비 좋은 거" (용량 대비 가격)
+    [용량 대비 가성비 분석]
+    100ml당 단가를 계산하여, 용량 대비 가격 효율이 가장 좋은 상품을 찾습니다.
+    사용자가 '가성비', '용량 당 최저' 를 찾을 때 적합합니다.
+
+    ✅ 사용 예시:
+    - "칠성 사이다 가성비."
+    - "펩시 콜라 용량 당 최저 알려줘."
 
     Args:
-        keywords: 검색 키워드 + 동의어/브랜드 (예: ["코카콜라", "콜라"])
-        preferred_store: 특정 매장만 검색 - "cu", "gs25", "seven_eleven" 중 하나
+        keywords: 검색할 상품명 키워드 (예: ["우유", "서울우유"])
+        preferred_store: (선택) 특정 편의점만 검색
     """
     if not keywords:
         return json.dumps({"error": "키워드를 입력해주세요"}, ensure_ascii=False)
-    
+
     keywords = [decode_unicode(k) for k in keywords]
     main_keyword = keywords[0]
     search_terms = [term.replace(" ", "").lower() for term in keywords]
 
     all_matched_items = []
     available_stores = list(STORE_NAMES.keys())
-    
+
     # 매장 필터링
     if preferred_store:
         target = preferred_store.lower().replace(" ", "")
         available_stores = [s for s in available_stores if target in s]
-    
+
     for store_id in available_stores:
         file_path = os.path.join(DB_DIR, f"db_{store_id}_with_tags.json")
         if not os.path.exists(file_path):
             file_path = os.path.join(DB_DIR, f"db_{store_id}.json")
         if not os.path.exists(file_path):
             continue
-            
+
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 items = data.get("items") if isinstance(data, dict) else data
                 if not isinstance(items, list):
                     continue
-                
+
                 for item in items:
                     p_name_clean = item.get("product_name", "").lower().replace(" ", "")
-                    
+
                     match_score = 0
                     for i, term in enumerate(search_terms):
                         if term in p_name_clean:
                             match_score += 100 if i == 0 else 20
-                    
+
                     if match_score >= 50:
-                        # 용량당 가격이 있는 상품만
-                        price_per_unit = item.get("price_per_unit")
-                        if not price_per_unit or price_per_unit <= 0:
+                        # 용량당 가격이 있는 상품만 (안전 파싱)
+                        raw_ppu = item.get("price_per_unit")
+
+                        # raw_ppu가 "1,234" 같이 문자열일 수도 있으니 정리
+                        if isinstance(raw_ppu, str):
+                            raw_ppu = raw_ppu.strip().replace(",", "")
+                            raw_ppu = re.sub(r"[^0-9.]", "", raw_ppu)
+
+                        try:
+                            ppu = float(raw_ppu)
+                        except (TypeError, ValueError):
+                            continue  # 파싱 불가면 스킵
+
+                        if ppu <= 0:
                             continue
-                            
+
                         display_name = STORE_NAMES.get(store_id, store_id.upper())
                         item["match_score"] = match_score
                         item["store_name"] = display_name
-                        item["sort_price"] = price_per_unit  # 용량당 가격으로 정렬!
+                        item["sort_price"] = ppu
                         all_matched_items.append(item)
-                        
+
         except Exception as e:
             print(f"Error reading {store_id}: {e}")
 
@@ -225,42 +232,29 @@ async def find_best_value(
             "results": []
         }, ensure_ascii=False)
 
-    # 정렬: 매칭 점수 높은 순 → 용량당 가격 낮은 순
-    all_matched_items.sort(key=lambda x: (-x["match_score"], x["sort_price"]))
+    # 1단계: 키워드 점수로 관련성 높은 10개 선별
+    all_matched_items.sort(key=lambda x: -x["match_score"])
+    top_relevant = all_matched_items[:10]
 
-    best = all_matched_items[0]
-    condition = best.get("discount_condition", "")
-    
+    # 2단계: 용량당 가격(가성비)으로 정렬 (낮을수록 좋음)
+    top_relevant.sort(key=lambda x: x["sort_price"])
+
     return json.dumps({
         "query": {
             "keywords": keywords,
             "store": preferred_store
         },
-        "total_found": len(all_matched_items),
-        "best_value": {
-            "product_name": best.get("product_name"),
-            "store": best.get("store_name"),
-            "discount_condition": condition,
-            "pay_price": best.get("sale_price"),
-            "get_count": 2 if "1+1" in condition else 3 if "2+1" in condition else 1,
-            "price_per_one": best.get("effective_unit_price") or best.get("unit_effective_unit_price"),
-            "unit_value": best.get("unit_value"),
-            "unit_type": best.get("unit_type"),
-            "price_per_unit": best.get("price_per_unit"),
-            "price_reference": best.get("price_reference"),
-            "image_url": best.get("image_url")
-        },
-        "all_results": [{
+        "results": [{
             "product_name": item.get("product_name"),
             "store": item.get("store_name"),
             "discount_condition": item.get("discount_condition"),
             "pay_price": item.get("sale_price"),
-            "price_per_one": item.get("effective_unit_price") or item.get("unit_effective_unit_price"),
+            "price_per_one": item.get("effective_unit_price"),
             "unit_value": item.get("unit_value"),
             "unit_type": item.get("unit_type"),
             "price_per_unit": item.get("price_per_unit"),
             "price_reference": item.get("price_reference")
-        } for item in all_matched_items[:10]]
+        } for item in top_relevant[:10]]
     }, ensure_ascii=False, indent=2)
 
 @mcp.tool()
@@ -280,20 +274,23 @@ async def recommend_smart_snacks(
     preferred_store: str = None
 ) -> str:
     """
-    [실시간 편의점 행사 기반 스마트 추천]
-    
-    ⚠️⚠️⚠️ 중요: 이 도구 호출 전 반드시 get_available_tags()를 먼저 호출하여 
-    category 값을 확인하세요.
+    [상황별/취향별 꿀조합 추천]
+    "야식 추천", "매운 거 땡겨", "만원으로 야식 조합 짜줘" 와 같이 구체적인 상품명 없이 상황이나 맛을 묘사할 때 사용합니다.
+    행사 상품과 태그를 기반으로 최적의 간식 조합을 제안합니다.
+
+    ✅ 사용 예시:
+    - "만원으로 2명이 먹을 야식 조합 짜줘" (예산+상황)
+    - "시험 기간에 먹기 좋은 카페인 조합" (상황)
+    - "단짠단짠 과자랑 음료 추천" (맛)
+
+    ⚠️ 중요: 호출 전 get_available_tags()로 유효한 태그를 확인해야 합니다.
 
     Args:
-        keywords: 검색 키워드 + 브랜드/동의어 포함 (예: ["라면", "신라면", "컵라면"])
-        categories: 여러 카테고리 동시 검색 가능 (예: ["음료", "과자", "빵"]) - 필수 권장
-        situation_tags: 상황 태그 - get_available_tags()의 situation에서 선택
-        taste_tags: 맛 태그 - get_available_tags()의 taste에서 선택
-        preferred_store: 선호 매장 - "cu", "gs25", "seven_eleven" 중 하나
-
-    Returns:
-        매칭된 상품 리스트 JSON
+        keywords: (선택) 포함하고 싶은 키워드 (예: ["라면"])
+        categories: 검색할 카테고리 (예: ["도시락", "음료"]) - 필수 권장
+        situation_tags: 상황 태그 (예: "야식", "혼술")
+        taste_tags: 맛 태그 (예: "매운맛", "단짠")
+        preferred_store: (선택) 선호 매장
     """
     all_items = []
     stores = list(STORE_NAMES.keys())
@@ -346,8 +343,16 @@ async def recommend_smart_snacks(
     for item in all_items:
         score = 0
         p_name = (item.get("product_name") or "").lower()
-        item_situation = (item.get("situation") or "").lower()
-        item_taste = (item.get("taste") or "").lower()
+        item_situation = item.get("situation") or ""
+        item_taste = item.get("taste") or ""
+
+        if isinstance(item_situation, list):
+            item_situation = " ".join(map(str, item_situation))
+        if isinstance(item_taste, list):
+            item_taste = " ".join(map(str, item_taste))
+
+        item_situation = str(item_situation).lower()
+        item_taste = str(item_taste).lower()
 
         # 키워드 매칭 (상품명)
         for kw in search_keywords:
@@ -363,16 +368,16 @@ async def recommend_smart_snacks(
         for taste in search_tastes:
             if taste in item_taste:
                 score += 12
-
-        if score >= 10:
-            sort_price = (
-                item.get("price_per_unit") or
-                item.get("effective_unit_price") or
-                item.get("sale_price") or
-                99999
-            )
+        threshold = 10 if search_keywords else 12
+        if score >= threshold:
+            sort_price = item.get("effective_unit_price") or item.get("unit_effective_unit_price") or 99999
             if isinstance(sort_price, str):
                 sort_price = int(re.sub(r"[^0-9]", "", sort_price) or 99999)
+            else:
+                try:
+                    sort_price = float(sort_price)
+                except (TypeError, ValueError):
+                    sort_price = 99999
 
             item["_score"] = score
             item["_sort_price"] = sort_price
@@ -388,7 +393,11 @@ async def recommend_smart_snacks(
     MAX_PER_STORE = 3
 
     for item in scored_results:
-        name_key = item["product_name"].replace(" ", "").lower()
+        pname = item.get("product_name") or ""
+        if not pname:
+            continue
+        name_key = pname.replace(" ", "").lower()
+        item["store"] = STORE_NAMES.get(store, store.upper())
         store = item.get("store", "")
 
         if name_key in seen_products:
@@ -406,9 +415,9 @@ async def recommend_smart_snacks(
             "discount_condition": condition,
             "pay_price": item.get("sale_price"),
             "get_count": 2 if "1+1" in condition else 3 if "2+1" in condition else 1,
-            "price_per_one": item.get("effective_unit_price") or item.get("unit_effective_unit_price"),
+            "price_per_one": item.get("effective_unit_price"),
             "category": item.get("category"),
-            "image_url": item.get("image_url")
+            # "image_url": item.get("image_url")
         })
 
         if len(final_results) >= 10:
@@ -433,22 +442,21 @@ async def compare_category_top3(
     preferred_store: str = None
 ) -> str:
     """
-    [매장별 최저가 TOP3 비교]
-    사용자가 "OO 비교해줘", "편의점별 OO 뭐가 좋아?" 처럼
-    **카테고리 전체**를 매장별로 **비교**할 때 사용합니다.
-    
-    예시 쿼리: "라면 비교해줘", "편의점별 음료 가성비", "과자 어디가 좋아?"
+    [매장별 카테고리 승자 비교]
+    "편의점별 라면 비교해줘", "어디가 음료 행사가 좋아?"처럼 매장 간의 카테고리 경쟁력을 비교합니다.
+    특정 카테고리의 매장별 BEST 3 상품을 뽑아 비교 분석합니다.
 
-    ⚠️⚠️⚠️ 중요: 이 도구 호출 전 반드시 get_available_tags()를 먼저 호출하여 
-    category 값을 확인하세요.
-    
-    ❌ 이 도구 사용 X: "코카콜라 제일 싼 곳" (특정 상품 → find_best_price)
-    ✅ 이 도구 사용 O: "음료 비교해줘" (카테고리 비교)
+    ✅ 사용 예시:
+    - "CU랑 GS25 중에 컵라면 어디가 더 싸?" (매장 간 비교)
+    - "편의점 3사 맥주 행사 비교해줘" (전체 비교)
+    - "이번 달 과자 행사는 어디가 제일 좋아?" (카테고리 승자 찾기)
+
+    ❌ 제외: 특정 상품 단건 검색은 find_best_price 사용.
 
     Args:
-        keywords: 검색 키워드 + 동의어 (예: ["라면", "컵라면"])
-        category: 상품 카테고리 - get_available_tags()에서 선택
-        preferred_store: 특정 매장만 비교
+        keywords: 검색 키워드 (예: ["컵라면"])
+        category: 비교할 카테고리 명 (get_available_tags 참조)
+        preferred_store: (선택) 특정 매장만 확인
     """
     available_stores = list(STORE_NAMES.keys())
     category = decode_unicode(category)
@@ -483,7 +491,6 @@ async def compare_category_top3(
                 cat_name = (item.get("category") or "").lower()
                 
                 match_score = 0
-
                  # category 필터 통과하면 기본 점수
                 if category:
                     match_score += 100
@@ -498,15 +505,20 @@ async def compare_category_top3(
                         match_score += 100 if i == 0 else 30
                 
                 if match_score >= 100:
-                    sort_price = (
-                        item.get("effective_unit_price") or
-                        item.get("price_per_unit") or
-                        99999
-                    )
-                    if 0 < sort_price < 999999:
-                        item["_score"] = match_score
-                        item["_sort_price"] = sort_price
-                        report_data[store_id].append(item)
+                    raw_price = (
+                    item.get("effective_unit_price") or
+                    item.get("price_per_unit")
+                )
+
+                try:
+                    sort_price = float(re.sub(r"[^0-9.]", "", str(raw_price)))
+                except (TypeError, ValueError):
+                    continue
+
+                if 0 < sort_price < 999999:
+                    item["_score"] = match_score
+                    item["_sort_price"] = sort_price
+                    report_data[store_id].append(item)
                         
         except Exception as e:
             print(f"Error reading {store_id}: {e}")
@@ -537,7 +549,7 @@ async def compare_category_top3(
     }, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
-    mcp.run(
+        mcp.run(
         transport="streamable-http",
         host="0.0.0.0",
         port=8000
