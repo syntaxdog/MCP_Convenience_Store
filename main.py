@@ -537,4 +537,8 @@ async def compare_category_top3(
     }, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(
+        transport="streamable-http",
+        host="0.0.0.0",
+        port=8000
+    )

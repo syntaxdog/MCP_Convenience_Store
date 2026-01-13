@@ -1,0 +1,16 @@
+# MCP 및 서버 관련
+fastmcp==2.14.3
+fastapi
+uvicorn
+python-dotenv
+
+# 크롤링 및 데이터 수집
+requests
+beautifulsoup4
+playwright
+
+# 스케줄러 및 데이터 처리
+apscheduler
+
+# AI 및 LLM
+google-generativeai
