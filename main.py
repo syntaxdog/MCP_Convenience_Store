@@ -268,7 +268,6 @@ def get_available_tags() -> dict:
 
 @mcp.tool()
 async def recommend_smart_snacks(
-    keywords: list[str] | None = None,
     categories: list[str] | None = None,
     situation_tags: list[str] | None = None,
     taste_tags: list[str] | None = None,
@@ -286,23 +285,20 @@ async def recommend_smart_snacks(
     - "시험 기간에 먹기 좋은 카페인 조합" (상황)
     - "단짠단짠 과자랑 음료 추천" (맛)
 
-    ⚠️ 중요: 호출 전 get_available_tags()를 무조건 실행
+    ⚠️ 중요: 호출 전 get_available_tags()로 유효한 태그를 확인해야 합니다.
 
     Args:
-        keywords: 포함하고 싶은 키워드 (예: ["라면"])
-        categories: 검색할 카테고리 (예: ["도시락", "음료"]) - 필수 권장
-        situation_tags: 상황 태그 (예: "야식", "혼술")
-        taste_tags: 맛 태그 (예: "매운맛", "단짠")
-        preferred_store: (선택) 선호 매장
+        categories: 여러 카테고리 동시 검색 가능 (예: ["음료", "과자", "빵"]) - 필수 권장 get_available_tags()의 category에서 선택
+        situation_tags: 상황 태그 - get_available_tags()의 situation에서 선택
+        taste_tags: 맛 태그 - get_available_tags()의 taste에서 선택
+        preferred_store: 선호 매장 - "cu", "gs25", "seven_eleven" 중 하나
     """
     all_items = []
     stores = list(STORE_NAMES.keys())
-    keywords = keywords or []
     categories = categories or []
     situation_tags = situation_tags or []
     taste_tags = taste_tags or []
 
-    keywords = [decode_unicode(k) for k in keywords]
     categories = [decode_unicode(c) for c in categories]
     situation_tags = [decode_unicode(s) for s in situation_tags]
     taste_tags = [decode_unicode(t) for t in taste_tags]
@@ -341,7 +337,6 @@ async def recommend_smart_snacks(
         ]
 
     # 4. 검색 준비
-    search_keywords = [k.lower().strip() for k in keywords if k]
     search_situations = [s.lower().strip() for s in (situation_tags or []) if s]
     search_tastes = [t.lower().strip() for t in (taste_tags or []) if t]
 
@@ -350,22 +345,8 @@ async def recommend_smart_snacks(
 
     for item in all_items:
         score = 0
-        p_name = (item.get("product_name") or "").lower()
-        item_situation = item.get("situation") or ""
-        item_taste = item.get("taste") or ""
-
-        if isinstance(item_situation, list):
-            item_situation = " ".join(map(str, item_situation))
-        if isinstance(item_taste, list):
-            item_taste = " ".join(map(str, item_taste))
-
-        item_situation = str(item_situation).lower()
-        item_taste = str(item_taste).lower()
-
-        # 키워드 매칭 (상품명)
-        for kw in search_keywords:
-            if kw in p_name:
-                score += 15
+        item_situation = (item.get("situation") or "").lower()
+        item_taste = (item.get("taste") or "").lower()
 
         # situation 매칭
         for sit in search_situations:
@@ -376,16 +357,16 @@ async def recommend_smart_snacks(
         for taste in search_tastes:
             if taste in item_taste:
                 score += 12
-        threshold = 10 if search_keywords else 12
-        if score >= threshold:
-            sort_price = item.get("effective_unit_price") or item.get("unit_effective_unit_price") or 99999
+
+        if score >= 10:
+            sort_price = (
+                item.get("price_per_unit") or
+                item.get("effective_unit_price") or
+                item.get("sale_price") or
+                99999
+            )
             if isinstance(sort_price, str):
                 sort_price = int(re.sub(r"[^0-9]", "", sort_price) or 99999)
-            else:
-                try:
-                    sort_price = float(sort_price)
-                except (TypeError, ValueError):
-                    sort_price = 99999
 
             item["_score"] = score
             item["_sort_price"] = sort_price
@@ -393,45 +374,35 @@ async def recommend_smart_snacks(
 
     # 6. 정렬
     scored_results.sort(key=lambda x: (-x["_score"], x["_sort_price"]))
-    if len(scored_results) > 1:
-        mix_range = scored_results[:20]
-        random.shuffle(mix_range)
-        scored_results[:20] = mix_range
 
     # 7. 중복 제거 + 매장 다양성
+    seen_products = set()
     store_count = {}
     final_results = []
-    seen_products = set()
     MAX_PER_STORE = 3
 
     for item in scored_results:
-        pname = item.get("product_name") or ""
-        if not pname: continue
-        
-        # 중복 체크
-        name_key = pname.replace(" ", "").lower()
-        if name_key in seen_products: continue
+        name_key = item["product_name"].replace(" ", "").lower()
+        store = item.get("store", "")
 
-        # 매장 이름 안전하게 가져오기
-        # item["store"]에 아까 로드할 때 넣은 "CU", "GS25" 등이 들어있어야 함
-        raw_code = str(item.get("store", "")).lower()
-        display_name = STORE_NAMES.get(raw_code, raw_code.upper())
-
-        if store_count.get(display_name, 0) >= MAX_PER_STORE:
+        if name_key in seen_products:
             continue
-            
-        seen_products.add(name_key)
-        store_count[display_name] = store_count.get(display_name, 0) + 1
+        if store_count.get(store, 0) >= MAX_PER_STORE:
+            continue
 
-        # 결과 리스트 구성 (None 값 방어)
+        seen_products.add(name_key)
+        store_count[store] = store_count.get(store, 0) + 1
+
+        condition = item.get("discount_condition", "")
         final_results.append({
-            "product_name": pname,
-            "store": display_name,
-            "discount_condition": str(item.get("discount_condition", "-")),
-            "pay_price": item.get("sale_price", 0),
-            "get_count": 2 if "1+1" in str(item.get("discount_condition", "")) else 3 if "2+1" in str(item.get("discount_condition", "")) else 1,
-            "price_per_one": item.get("effective_unit_price") or 0,
-            "category": item.get("category", "기타")
+            "product_name": item.get("product_name"),
+            "store": store,
+            "discount_condition": condition,
+            "pay_price": item.get("sale_price"),
+            "get_count": 2 if "1+1" in condition else 3 if "2+1" in condition else 1,
+            "price_per_one": item.get("effective_unit_price") or item.get("unit_effective_unit_price"),
+            "category": item.get("category"),
+            # "image_url": item.get("image_url")
         })
 
         if len(final_results) >= 10:
@@ -439,7 +410,6 @@ async def recommend_smart_snacks(
 
     return json.dumps({
         "query": {
-            "keywords": keywords,
             "categories": categories,
             "situation_tags": situation_tags,
             "taste_tags": taste_tags,
