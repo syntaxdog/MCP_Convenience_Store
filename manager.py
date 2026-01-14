@@ -19,8 +19,8 @@ import google.generativeai as genai
 load_dotenv()
 DB_DIR = os.path.join(os.path.dirname(__file__), "db")
 TAG_CANDIDATES_PATH = os.path.join(DB_DIR, "tag_candidates.json")
-# GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY")
+#GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
     raise ValueError("API 키가 설정되지 않았습니다. .env 파일을 확인해주세요.")

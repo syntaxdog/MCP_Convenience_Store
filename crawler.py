@@ -216,13 +216,16 @@ async def get_gs25_deals():
                     if not items_list: break
 
                     for item in items_list:
-                        price = item.get("attPrice") or item.get("price") or 0
-                        if isinstance(price, str): price = int("".join(filter(str.isdigit, price)))
+                        price_raw = item.get("attPrice") or item.get("price") or 0
+                        if isinstance(price_raw, str):
+                            price = int("".join(filter(str.isdigit, price_raw)))
+                        else:
+                            price = int(price_raw)
                         all_items.append({
                             "product_name": item.get("goodsNm", ""),
-                            "original_price": price,
-                            "sale_price" : price if event_key == "ONE_TO_ONE" else (price*2),
-                            "effective_unit_price": price // 2 if event_key == "ONE_TO_ONE" else (price * 2) // 3,
+                            "original_price": int(price),
+                            "sale_price" : int(price if event_key == "ONE_TO_ONE" else (price * 2)),
+                            "effective_unit_price": int(price // 2 if event_key == "ONE_TO_ONE" else (price * 2) // 3),
                             "discount_condition": event_name,
                             "image_url": item.get("attFileNm") or item.get("attFileNmOld", "")
                         })
@@ -273,9 +276,9 @@ async def get_seven_eleven_deals():
                         
                         all_items.append({
                             "product_name": name_el.get_text(strip=True),
-                            "original_price": price,
-                            "sale_price" : price if "1+1" in tag else price*2 if "2+1" in tag else price,
-                            "effective_unit_price": price // 2 if "1+1" in tag else (price * 2) // 3 if "2+1" in tag else price,
+                            "original_price": int(price),
+                            "sale_price" : int(price if "1+1" in tag else price * 2 if "2+1" in tag else price),
+                            "effective_unit_price": int(price // 2 if "1+1" in tag else (price * 2) // 3 if "2+1" in tag else price),
                             "discount_condition": tag,
                             "image_url": "https://www.7-eleven.co.kr" + li.select_one("img")["src"] if li.select_one("img") else ""
                         })
@@ -328,7 +331,7 @@ async def main():
     # 1 1 0 이 기본
     scheduler.add_job(
         run_full_pipeline,
-        CronTrigger(day="13", hour="17", minute="45"),
+        CronTrigger(day="1", hour="1", minute="0"),
         args=[["cu", "gs25", "seven_eleven"]],
         name="Monthly_Convenience_Stores"
     )

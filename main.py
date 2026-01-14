@@ -3,6 +3,7 @@
 - CU, GS25, 세븐일레븐 행사 상품 추천
 """
 import os
+import random
 import json
 import sys
 import io
@@ -53,7 +54,7 @@ async def find_best_price(
 ) -> str:
     """
     [특정 상품 최저가 찾기]
-    사용자가 지정한 특정 상품(예: 코카콜라, 신라면)을 가장 저렴하게 판매하는 매장을 찾습니다.
+    사용자가 지정한 특정 상품(예: 코카콜라, 신라면) 의 최저가를 찾아줍니다.
     단순히 가격이 가장 낮은 곳을 찾을 때 사용하세요.
 
     ✅ 사용 예시:
@@ -260,33 +261,35 @@ async def find_best_value(
 @mcp.tool()
 def get_available_tags() -> dict:
     """
-    검색에 사용 가능한 태그 목록을 반환합니다.
+    검색에 사용 가능한 태그 목록을 반환합니다. 꼭 이 리스트안에서만 고르시오.
     recommend_smart_snacks, compare_category_top3 호출 전에 이 목록에서 선택하세요.
     """
     return TAG_CANDIDATES
 
 @mcp.tool()
 async def recommend_smart_snacks(
-    keywords: list[str],
-    categories: list[str] = None,
-    situation_tags: list[str] = None,
-    taste_tags: list[str] = None,
-    preferred_store: str = None
+    keywords: list[str] | None = None,
+    categories: list[str] | None = None,
+    situation_tags: list[str] | None = None,
+    taste_tags: list[str] | None = None,
+    preferred_store: str | None = None
 ) -> str:
     """
     [상황별/취향별 꿀조합 추천]
-    "야식 추천", "매운 거 땡겨", "만원으로 야식 조합 짜줘" 와 같이 구체적인 상품명 없이 상황이나 맛을 묘사할 때 사용합니다.
-    행사 상품과 태그를 기반으로 최적의 간식 조합을 제안합니다.
+    1. "야식 추천", "매운 거 땡겨" 같이 상황이나 맛을 묘사할 때 추천 상품을 제안합니다.
+    2.  "만원으로 야식 조합 짜줘" 와 같이 사용자의 예산이 제시되면, 결과 리스트에서 상품을 골라 
+        '메인+사이드+음료' 또는 '1+1 상품 2개' 등의 구체적인 조합을 구성해서 답변하세요.
+        단순 상품 나열이 아닌, '한 끼 식사 세트'를 구성하는 것이 목표입니다.
 
     ✅ 사용 예시:
     - "만원으로 2명이 먹을 야식 조합 짜줘" (예산+상황)
     - "시험 기간에 먹기 좋은 카페인 조합" (상황)
     - "단짠단짠 과자랑 음료 추천" (맛)
 
-    ⚠️ 중요: 호출 전 get_available_tags()로 유효한 태그를 확인해야 합니다.
+    ⚠️ 중요: 호출 전 get_available_tags()를 무조건 실행
 
     Args:
-        keywords: (선택) 포함하고 싶은 키워드 (예: ["라면"])
+        keywords: 포함하고 싶은 키워드 (예: ["라면"])
         categories: 검색할 카테고리 (예: ["도시락", "음료"]) - 필수 권장
         situation_tags: 상황 태그 (예: "야식", "혼술")
         taste_tags: 맛 태그 (예: "매운맛", "단짠")
@@ -294,10 +297,15 @@ async def recommend_smart_snacks(
     """
     all_items = []
     stores = list(STORE_NAMES.keys())
-    keywords = [decode_unicode(k) for k in keywords] if keywords else []
-    categories = [decode_unicode(c) for c in categories] if categories else None
-    situation_tags = [decode_unicode(s) for s in situation_tags] if situation_tags else None
-    taste_tags = [decode_unicode(t) for t in taste_tags] if taste_tags else None
+    keywords = keywords or []
+    categories = categories or []
+    situation_tags = situation_tags or []
+    taste_tags = taste_tags or []
+
+    keywords = [decode_unicode(k) for k in keywords]
+    categories = [decode_unicode(c) for c in categories]
+    situation_tags = [decode_unicode(s) for s in situation_tags]
+    taste_tags = [decode_unicode(t) for t in taste_tags]
 
     # 1. 매장 필터링
     if preferred_store:
@@ -385,39 +393,45 @@ async def recommend_smart_snacks(
 
     # 6. 정렬
     scored_results.sort(key=lambda x: (-x["_score"], x["_sort_price"]))
+    if len(scored_results) > 1:
+        mix_range = scored_results[:20]
+        random.shuffle(mix_range)
+        scored_results[:20] = mix_range
 
     # 7. 중복 제거 + 매장 다양성
-    seen_products = set()
     store_count = {}
     final_results = []
+    seen_products = set()
     MAX_PER_STORE = 3
 
     for item in scored_results:
         pname = item.get("product_name") or ""
-        if not pname:
-            continue
+        if not pname: continue
+        
+        # 중복 체크
         name_key = pname.replace(" ", "").lower()
-        item["store"] = STORE_NAMES.get(store, store.upper())
-        store = item.get("store", "")
+        if name_key in seen_products: continue
 
-        if name_key in seen_products:
-            continue
-        if store_count.get(store, 0) >= MAX_PER_STORE:
-            continue
+        # 매장 이름 안전하게 가져오기
+        # item["store"]에 아까 로드할 때 넣은 "CU", "GS25" 등이 들어있어야 함
+        raw_code = str(item.get("store", "")).lower()
+        display_name = STORE_NAMES.get(raw_code, raw_code.upper())
 
+        if store_count.get(display_name, 0) >= MAX_PER_STORE:
+            continue
+            
         seen_products.add(name_key)
-        store_count[store] = store_count.get(store, 0) + 1
+        store_count[display_name] = store_count.get(display_name, 0) + 1
 
-        condition = item.get("discount_condition", "")
+        # 결과 리스트 구성 (None 값 방어)
         final_results.append({
-            "product_name": item.get("product_name"),
-            "store": store,
-            "discount_condition": condition,
-            "pay_price": item.get("sale_price"),
-            "get_count": 2 if "1+1" in condition else 3 if "2+1" in condition else 1,
-            "price_per_one": item.get("effective_unit_price"),
-            "category": item.get("category"),
-            # "image_url": item.get("image_url")
+            "product_name": pname,
+            "store": display_name,
+            "discount_condition": str(item.get("discount_condition", "-")),
+            "pay_price": item.get("sale_price", 0),
+            "get_count": 2 if "1+1" in str(item.get("discount_condition", "")) else 3 if "2+1" in str(item.get("discount_condition", "")) else 1,
+            "price_per_one": item.get("effective_unit_price") or 0,
+            "category": item.get("category", "기타")
         })
 
         if len(final_results) >= 10:
@@ -439,7 +453,7 @@ async def recommend_smart_snacks(
 async def compare_category_top3(
     keywords: list[str],
     category: str = None,
-    preferred_store: str = None
+    preferred_store: list[str] = None
 ) -> str:
     """
     [매장별 카테고리 승자 비교]
@@ -447,11 +461,13 @@ async def compare_category_top3(
     특정 카테고리의 매장별 BEST 3 상품을 뽑아 비교 분석합니다.
 
     ✅ 사용 예시:
-    - "CU랑 GS25 중에 컵라면 어디가 더 싸?" (매장 간 비교)
-    - "편의점 3사 맥주 행사 비교해줘" (전체 비교)
+    - "초콜릿 어디가 제일 싸?" (전체 비교)
+    - "CU랑 GS25 중에 라면 어디가 더 싸?" (매장 간 비교)
     - "이번 달 과자 행사는 어디가 제일 좋아?" (카테고리 승자 찾기)
 
     ❌ 제외: 특정 상품 단건 검색은 find_best_price 사용.
+
+    ⚠️ 중요: 호출 전 get_available_tags()를 무조건 실행
 
     Args:
         keywords: 검색 키워드 (예: ["컵라면"])
