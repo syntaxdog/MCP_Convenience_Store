@@ -19,7 +19,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding='utf-8')
 # 초기화 및 설정
 # ==========================================
 load_dotenv()
-mcp = FastMCP("Convenience Store Smart Bot")
+mcp = FastMCP("Pyeon_Ri_Dan")
 DB_DIR = os.path.join(os.path.dirname(__file__), "db")
 
 STORE_NAMES = {
@@ -281,9 +281,10 @@ async def recommend_smart_snacks(
         단순 상품 나열이 아닌, '한 끼 식사 세트'를 구성하는 것이 목표입니다.
 
     ✅ 사용 예시:
-    - "만원으로 2명이 먹을 야식 조합 짜줘" (예산+상황)
+    
     - "시험 기간에 먹기 좋은 카페인 조합" (상황)
     - "단짠단짠 과자랑 음료 추천" (맛)
+    - "만원으로 2명이 먹을 야식 조합 짜줘" (예산+상황)
 
     ⚠️ 중요: 호출 전 get_available_tags()로 유효한 태그를 확인해야 합니다.
 
