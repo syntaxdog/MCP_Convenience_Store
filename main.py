@@ -58,7 +58,7 @@ async def find_best_price(
     단순히 가격이 가장 낮은 곳을 찾을 때 사용하세요.
 
     ✅ 사용 예시:
-    - "코카콜라 최저가 알려줘."
+    - "코카콜라 최저가."
     - "신라면 어디가 제일 싸?"
 
     Args:
@@ -259,14 +259,6 @@ async def find_best_value(
     }, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-def get_available_tags() -> dict:
-    """
-    검색에 사용 가능한 태그 목록을 반환합니다. 꼭 이 리스트안에서만 고르시오.
-    recommend_smart_snacks, compare_category_top3 호출 전에 이 목록에서 선택하세요.
-    """
-    return TAG_CANDIDATES
-
-@mcp.tool()
 async def recommend_smart_snacks(
     categories: list[str] | None = None,
     situation_tags: list[str] | None = None,
@@ -283,7 +275,7 @@ async def recommend_smart_snacks(
     ✅ 사용 예시:
     
     - "시험 기간에 먹기 좋은 카페인 조합" (상황)
-    - "단짠단짠 과자랑 음료 추천" (맛)
+    - "짠 과자랑 음료 추천" (맛)
     - "만원으로 2명이 먹을 야식 조합 짜줘" (예산+상황)
 
     ⚠️ 중요: 호출 전 get_available_tags()로 유효한 태그를 확인해야 합니다.
@@ -436,7 +428,7 @@ async def compare_category_top3(
 ) -> str:
     """
     [매장별 카테고리 승자 비교]
-    "편의점별 라면 비교해줘", "어디가 음료 행사가 좋아?"처럼 매장 간의 카테고리 경쟁력을 비교합니다.
+    "편의점별 라면 비교해줘", "어디가 음료 행사가 좋아?"처럼 매장 간의 '카테고리' 경쟁력을 비교합니다.
     특정 카테고리의 매장별 BEST 3 상품을 뽑아 비교 분석합니다.
 
     ✅ 사용 예시:
@@ -458,8 +450,11 @@ async def compare_category_top3(
     keywords = [decode_unicode(k) for k in keywords]
     
     if preferred_store:
-        target = preferred_store.lower().replace(" ", "")
-        available_stores = [s for s in available_stores if target in s]
+        targets = [s.lower().replace(" ", "") for s in preferred_store]
+        available_stores = [
+            s for s in available_stores 
+            if any(t in s.lower() for t in targets)
+        ]
     
     search_keywords = [k.replace(" ", "").lower() for k in keywords]
     
@@ -542,6 +537,14 @@ async def compare_category_top3(
         },
         "results": final_results
     }, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+def get_available_tags() -> dict:
+    """
+    검색에 사용 가능한 태그 목록을 반환합니다. 꼭 이 리스트안에서만 고르시오.
+    recommend_smart_snacks, compare_category_top3 호출 전에 이 목록에서 선택하세요.
+    """
+    return TAG_CANDIDATES
 
 if __name__ == "__main__":
         mcp.run(
