@@ -1,6 +1,6 @@
 """
 편의점 행사 정보 MCP 서버
-- CU, GS25, 세븐일레븐 행사 상품 추천
+- CU, GS25, 세븐일레븐 행사 상품 추천dd
 """
 import os
 import random
