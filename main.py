@@ -1,6 +1,6 @@
 """
 편의점 행사 정보 MCP 서버
-- CU, GS25, 세븐일레븐 행사 상품 추천dd
+- CU, GS25, 세븐일레븐 행사 상품 추천
 """
 import os
 import random
@@ -374,6 +374,14 @@ async def recommend_smart_snacks(
 
     # 6. 정렬
     scored_results.sort(key=lambda x: (-x["_score"], x["_sort_price"]))
+
+    # 상위 30개 정도의 좋은 후보군을 뽑아서 그 안에서 순서를 섞습니다.
+    if len(scored_results) > 1:
+        # 전체 결과가 30개보다 적으면 전체를, 많으면 상위 30개만 섞음
+        mix_limit = min(len(scored_results), 30)
+        top_candidates = scored_results[:mix_limit]
+        random.shuffle(top_candidates)
+        scored_results[:mix_limit] = top_candidates
 
     # 7. 중복 제거 + 매장 다양성
     seen_products = set()
