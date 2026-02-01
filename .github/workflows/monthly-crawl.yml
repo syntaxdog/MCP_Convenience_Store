@@ -51,9 +51,7 @@ jobs:
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
-          echo "Starting crawler..."
-          python crawler.py --manual cu gs25 seven_eleven
-          echo "Crawler finished!"
+          python run_crawl.py cu gs25 seven_eleven
           ls -la db/
 
       - name: Commit crawled data
