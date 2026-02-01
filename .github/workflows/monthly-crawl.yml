@@ -1,0 +1,83 @@
+name: Monthly Crawler
+
+on:
+  # 매월 1일 새벽 1시 (KST) = 전날 16:00 UTC
+  schedule:
+    - cron: '0 16 28-31 * *'
+
+  # 수동 트리거
+  workflow_dispatch:
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check if tomorrow is 1st day of month
+        id: date-check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          TOMORROW=$(date -u -d "+1 day" +%d)
+          if [ "$TOMORROW" = "01" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout repository
+        if: steps.date-check.outputs.should_run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        if: steps.date-check.outputs.should_run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        if: steps.date-check.outputs.should_run == 'true'
+        run: |
+          pip install requests beautifulsoup4 playwright google-generativeai python-dotenv apscheduler
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run crawler
+        if: steps.date-check.outputs.should_run == 'true'
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          echo "Starting crawler..."
+          python crawler.py --manual cu gs25 seven_eleven
+          echo "Crawler finished!"
+          ls -la db/
+
+      - name: Commit crawled data
+        if: steps.date-check.outputs.should_run == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add db/
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update crawled data ($(date -u +%Y-%m-%d))"
+            git push
+          fi
+
+      - name: Setup flyctl
+        if: steps.date-check.outputs.should_run == 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to fly.io
+        if: steps.date-check.outputs.should_run == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl deploy -a kakao --remote-only
